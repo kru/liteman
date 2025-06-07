@@ -1,232 +1,413 @@
 package main
 
-import "core:fmt"
-import "core:os"
-import "core:os/os2"
-import "core:strings"
+import "base:runtime"
+import clay "clay-odin"
 import "core:encoding/json"
+import "core:fmt"
+import "core:math"
+import "core:strings"
 import "vendor:raylib"
 
-// Constants for window and UI
-WINDOW_WIDTH :: 800
-WINDOW_HEIGHT :: 600
-MAX_CURL_INPUT :: 1024
-MAX_RESPONSE :: 10 * 1024 // 10KB response buffer
-SAVE_FILE :: "saved_curl_commands.json"
+COLOR_LIGHT :: clay.Color{224, 215, 210, 255}
+COLOR_RED :: clay.Color{168, 66, 28, 255}
+COLOR_ORANGE :: clay.Color{225, 138, 50, 255}
+COLOR_BLACK :: clay.Color{0, 0, 0, 255}
 
-// Command structure for saving
-Command :: struct {
-    name: string,
-    curl: string,
+windowWidth: i32 = 1024
+windowHeight: i32 = 768
+
+FONT_ID_BODY_16 :: 0
+FONT_ID_BODY_36 :: 5
+FONT_ID_BODY_30 :: 6
+FONT_ID_BODY_28 :: 7
+FONT_ID_BODY_24 :: 8
+
+Raylib_Font :: struct {
+	fontId: u16,
+	font:   raylib.Font,
 }
 
-// App state
-AppState :: struct {
-    curl_input: [MAX_CURL_INPUT]u8,
-    response: [MAX_RESPONSE]u8,
-    response_scroll: i32,
-    saved_commands: [dynamic]Command,
-    selected_command: i32,
-    edit_mode: bool,
-    edit_name_buffer: [256]u8,
-    error_msg: string,
+clay_color_to_rl_color :: proc(color: clay.Color) -> raylib.Color {
+	return {u8(color.r), u8(color.g), u8(color.b), u8(color.a)}
 }
 
-// Global state
-state: AppState
-
-// Load saved commands from JSON file
-load_commands :: proc() {
-    data, ok := os.read_entire_file(SAVE_FILE)
-    if !ok {
-        state.error_msg = "Failed to load saved commands"
-        return
-    }
-    defer delete(data)
-    err := json.unmarshal(data, &state.saved_commands)
-    if err != nil {
-        state.error_msg = "Failed to parse saved commands"
-    }
+loadFont :: proc(fontId: u16, fontSize: u16, path: cstring) {
+	assign_at(
+		&raylib_fonts,
+		fontId,
+		Raylib_Font {
+			font = raylib.LoadFontEx(path, cast(i32)fontSize * 2, nil, 0),
+			fontId = cast(u16)fontId,
+		},
+	)
+	raylib.SetTextureFilter(raylib_fonts[fontId].font.texture, raylib.TextureFilter.TRILINEAR)
 }
 
-// Save commands to JSON file
-save_commands :: proc() {
-    data, err := json.marshal(state.saved_commands)
-    if err != nil {
-        state.error_msg = "Failed to serialize commands"
-        return
-    }
-    defer delete(data)
-    ok := os.write_entire_file(SAVE_FILE, data)
-    if !ok {
-        state.error_msg = "Failed to save commands"
-    }
+raylib_fonts := [dynamic]Raylib_Font{}
+
+draw_arc :: proc(
+	x, y: f32,
+	inner_rad, outer_rad: f32,
+	start_angle, end_angle: f32,
+	color: clay.Color,
+) {
+	raylib.DrawRing(
+		{math.round(x), math.round(y)},
+		math.round(inner_rad),
+		outer_rad,
+		start_angle,
+		end_angle,
+		10,
+		clay_color_to_rl_color(color),
+	)
 }
 
-// Run cURL command via system shell
-run_curl :: proc(cmd: string) {
-    full_cmd := strings.concatenate({"curl ", cmd})
-    defer delete(full_cmd)
-    
-    r, w, pipe_err := os2.pipe()
-    if pipe_err != nil {
-        state.error_msg = "Failed to create pipe"
-        return
-    }
-    defer os2.close(r)
-    defer os2.close(w)
-    
-    process, proc_err := os2.process_start(os2.Process_Desc{"curl", {cmd}, nil, nil,w,r})
-    if proc_err != nil {
-        state.error_msg = "Failed to run cURL"
-        return
-    }
-    
-    buffer: [MAX_RESPONSE]u8
-    bytes_read, read_err := os.read(os.stdin, buffer[:])
-    if read_err != nil {
-        state.error_msg = "Failed to read cURL output"
-        return
-    }
-    
-    // Try to parse as JSON for pretty printing
-    json_data: json.Value
-    parse_err := json.unmarshal(buffer[:bytes_read], &json_data)
-    if parse_err == nil {
-        formatted, fmt_err := json.marshal(json_data, {pretty = true})
-        if fmt_err == nil {
-            copy(state.response[:], formatted)
-            delete(formatted)
-        } else {
-            copy(state.response[:], buffer[:bytes_read])
-        }
-        json.destroy_value(json_data)
-    } else {
-        copy(state.response[:], buffer[:bytes_read])
-    }
-    state.response_scroll = 0
+draw_rect :: proc(x, y, w, h: f32, color: clay.Color) {
+	raylib.DrawRectangle(
+		i32(math.round(x)),
+		i32(math.round(y)),
+		i32(math.round(w)),
+		i32(math.round(h)),
+		clay_color_to_rl_color(color),
+	)
 }
 
-// Main setup
-setup :: proc() {
-    raylib.InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "cURL Command Runner")
-    raylib.SetTargetFPS(60)
-    state = AppState{
-        curl_input = {},
-        response = {},
-        response_scroll = 0,
-        saved_commands = make([dynamic]Command),
-        selected_command = -1,
-        edit_mode = false,
-        edit_name_buffer = {},
-        error_msg = "",
-    }
-    load_commands()
+draw_rect_rounded :: proc(x, y, w, h: f32, radius: f32, color: clay.Color) {
+	raylib.DrawRectangleRounded({x, y, w, h}, radius, 8, clay_color_to_rl_color(color))
 }
 
-// Main loop
+measure_text :: proc "c" (
+	text: clay.StringSlice,
+	config: ^clay.TextElementConfig,
+	userData: rawptr,
+) -> clay.Dimensions {
+	line_width: f32 = 0
+
+	font := raylib_fonts[config.fontId].font
+
+	for i in 0 ..< text.length {
+		glyph_index := text.chars[i] - 32
+
+		glyph := font.glyphs[glyph_index]
+
+		if glyph.advanceX != 0 {
+			line_width += f32(glyph.advanceX)
+		} else {
+			line_width += font.recs[glyph_index].width + f32(glyph.offsetX)
+		}
+	}
+
+	return {width = line_width / 2, height = f32(config.fontSize)}
+}
+
+error_handler :: proc "c" (err_data: clay.ErrorData) {
+	context = runtime.default_context()
+	fmt.printfln("%s", err_data.errorText)
+}
+
+// Layout config is just a struct that can be declacred static, or inline
+sidebar_item_layout := clay.LayoutConfig {
+	sizing = {width = clay.SizingGrow({}), height = clay.SizingFixed(50)},
+}
+
+// Re-usable components are just normal
+sidebar_item_component :: proc(index: u32) {
+	if clay.UI()(
+	{
+		id = clay.ID("SidebarBlob", index),
+		layout = sidebar_item_layout,
+		backgroundColor = COLOR_ORANGE,
+	},
+	) {}
+}
+
+// An example function to create your layout tree
+create_layout :: proc() -> clay.ClayArray(clay.RenderCommand) {
+	// Begin constructing the layout.
+	clay.BeginLayout()
+
+	// An example of laying out a UI with a fixed-width sidebar and flexible-width main content
+	// NOTE: To create a scope for child components, the Odin API uses `if` with components that have children
+	if clay.UI()(
+	{
+		id = clay.ID("OuterContainer"),
+		layout = {
+			sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
+			padding = {16, 16, 16, 16},
+			childGap = 16,
+		},
+		backgroundColor = {250, 250, 255, 255},
+	},
+	) {
+		if clay.UI()(
+		{
+			id = clay.ID("SideBar"),
+			layout = {
+				layoutDirection = .TopToBottom,
+				sizing = {width = clay.SizingFixed(300), height = clay.SizingGrow({})},
+				padding = {16, 16, 16, 16},
+				childGap = 16,
+			},
+			backgroundColor = COLOR_LIGHT,
+		},
+		) {
+			if clay.UI()(
+			{
+				id = clay.ID("ProfilePictureOuter"),
+				layout = {
+					sizing = {width = clay.SizingGrow({})},
+					padding = {16, 16, 16, 16},
+					childGap = 16,
+					childAlignment = {y = .Center},
+				},
+				backgroundColor = COLOR_RED,
+				cornerRadius = {6, 6, 6, 6},
+			},
+			) {
+				if clay.UI()(
+				{
+					id = clay.ID("ProfilePicture"),
+					layout = {
+						sizing = {width = clay.SizingFixed(60), height = clay.SizingFixed(60)},
+					},
+				},
+				) {}
+
+				clay.Text(
+					"Clay - UI Library",
+					clay.TextConfig({textColor = COLOR_BLACK, fontSize = 16}),
+				)
+			}
+
+			// Standard Odin code like loops, etc. work inside components.
+			// Here we render 5 sidebar items.
+			for i in u32(0) ..< 5 {
+				sidebar_item_component(i)
+			}
+		}
+
+		if clay.UI()(
+		{
+			id = clay.ID("MainContent"),
+			layout = {sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})}},
+			backgroundColor = COLOR_LIGHT,
+		},
+		) {}
+	}
+
+	// Returns a list of render commands
+	return clay.EndLayout()
+}
+
+clay_raylib_render :: proc(
+	render_commands: ^clay.ClayArray(clay.RenderCommand),
+	allocator := context.temp_allocator,
+) {
+	for i in 0 ..< render_commands.length {
+		render_command := clay.RenderCommandArray_Get(render_commands, i)
+		bounds := render_command.boundingBox
+
+		switch render_command.commandType {
+		case .None: // None
+		case .Text:
+			config := render_command.renderData.text
+
+			text := string(config.stringContents.chars[:config.stringContents.length])
+
+			// Raylib uses C strings instead of Odin strings, so we need to clone
+			// Assume this will be freed elsewhere since we default to the temp allocator
+			cstr_text := strings.clone_to_cstring(text, allocator)
+
+			font := raylib_fonts[config.fontId].font
+			raylib.DrawTextEx(
+				font,
+				cstr_text,
+				{bounds.x, bounds.y},
+				f32(config.fontSize),
+				f32(config.letterSpacing),
+				clay_color_to_rl_color(config.textColor),
+			)
+		case .Image:
+			config := render_command.renderData.image
+			tint := config.backgroundColor
+			if tint == 0 {
+				tint = {255, 255, 255, 255}
+			}
+
+			imageTexture := (^raylib.Texture2D)(config.imageData)
+			raylib.DrawTextureEx(
+				imageTexture^,
+				{bounds.x, bounds.y},
+				0,
+				bounds.width / f32(imageTexture.width),
+				clay_color_to_rl_color(tint),
+			)
+		case .ScissorStart:
+			raylib.BeginScissorMode(
+				i32(math.round(bounds.x)),
+				i32(math.round(bounds.y)),
+				i32(math.round(bounds.width)),
+				i32(math.round(bounds.height)),
+			)
+		case .ScissorEnd:
+			raylib.EndScissorMode()
+		case .Rectangle:
+			config := render_command.renderData.rectangle
+			if config.cornerRadius.topLeft > 0 {
+				radius: f32 = (config.cornerRadius.topLeft * 2) / min(bounds.width, bounds.height)
+				draw_rect_rounded(
+					bounds.x,
+					bounds.y,
+					bounds.width,
+					bounds.height,
+					radius,
+					config.backgroundColor,
+				)
+			} else {
+				draw_rect(bounds.x, bounds.y, bounds.width, bounds.height, config.backgroundColor)
+			}
+		case .Border:
+			config := render_command.renderData.border
+			// Left border
+			if config.width.left > 0 {
+				draw_rect(
+					bounds.x,
+					bounds.y + config.cornerRadius.topLeft,
+					f32(config.width.left),
+					bounds.height - config.cornerRadius.topLeft - config.cornerRadius.bottomLeft,
+					config.color,
+				)
+			}
+			// Right border
+			if config.width.right > 0 {
+				draw_rect(
+					bounds.x + bounds.width - f32(config.width.right),
+					bounds.y + config.cornerRadius.topRight,
+					f32(config.width.right),
+					bounds.height - config.cornerRadius.topRight - config.cornerRadius.bottomRight,
+					config.color,
+				)
+			}
+			// Top border
+			if config.width.top > 0 {
+				draw_rect(
+					bounds.x + config.cornerRadius.topLeft,
+					bounds.y,
+					bounds.width - config.cornerRadius.topLeft - config.cornerRadius.topRight,
+					f32(config.width.top),
+					config.color,
+				)
+			}
+			// Bottom border
+			if config.width.bottom > 0 {
+				draw_rect(
+					bounds.x + config.cornerRadius.bottomLeft,
+					bounds.y + bounds.height - f32(config.width.bottom),
+					bounds.width -
+					config.cornerRadius.bottomLeft -
+					config.cornerRadius.bottomRight,
+					f32(config.width.bottom),
+					config.color,
+				)
+			}
+
+			// Rounded Borders
+			if config.cornerRadius.topLeft > 0 {
+				draw_arc(
+					bounds.x + config.cornerRadius.topLeft,
+					bounds.y + config.cornerRadius.topLeft,
+					config.cornerRadius.topLeft - f32(config.width.top),
+					config.cornerRadius.topLeft,
+					180,
+					270,
+					config.color,
+				)
+			}
+			if config.cornerRadius.topRight > 0 {
+				draw_arc(
+					bounds.x + bounds.width - config.cornerRadius.topRight,
+					bounds.y + config.cornerRadius.topRight,
+					config.cornerRadius.topRight - f32(config.width.top),
+					config.cornerRadius.topRight,
+					270,
+					360,
+					config.color,
+				)
+			}
+			if config.cornerRadius.bottomLeft > 0 {
+				draw_arc(
+					bounds.x + config.cornerRadius.bottomLeft,
+					bounds.y + bounds.height - config.cornerRadius.bottomLeft,
+					config.cornerRadius.bottomLeft - f32(config.width.top),
+					config.cornerRadius.bottomLeft,
+					90,
+					180,
+					config.color,
+				)
+			}
+			if config.cornerRadius.bottomRight > 0 {
+				draw_arc(
+					bounds.x + bounds.width - config.cornerRadius.bottomRight,
+					bounds.y + bounds.height - config.cornerRadius.bottomRight,
+					config.cornerRadius.bottomRight - f32(config.width.bottom),
+					config.cornerRadius.bottomRight,
+					0.1,
+					90,
+					config.color,
+				)
+			}
+		case clay.RenderCommandType.Custom:
+		// Implement custom element rendering here
+		}
+	}
+}
+
 main :: proc() {
-    setup()
-    defer raylib.CloseWindow()
-    defer delete(state.saved_commands)
-    
-    for !raylib.WindowShouldClose() {
-        // Input box for cURL command
-        raylib.BeginDrawing()
-        raylib.ClearBackground(raylib.RAYWHITE)
-        
-        raylib.GuiLabel(raylib.Rectangle{10, 10, 100, 30}, "cURL Command:")
-        if raylib.GuiTextBox(raylib.Rectangle{120, 10, 670, 30}, fmt.caprintf(string(state.curl_input[:])), MAX_CURL_INPUT, true) {
-            // Input changed
-        }
-        
-        // Buttons: Run, Save, Copy
-        if raylib.GuiButton(raylib.Rectangle{120, 50, 100, 30}, "Run") {
-            cmd := strings.trim_space(string(state.curl_input[:]))
-            if len(cmd) > 0 {
-                run_curl(cmd)
-            } else {
-                state.error_msg = "Please enter a cURL command"
-            }
-        }
-        if raylib.GuiButton(raylib.Rectangle{230, 50, 100, 30}, "Copy Response") {
-            raylib.SetClipboardText(fmt.caprintf(string(state.response[:])))
-        }
-        if raylib.GuiButton(raylib.Rectangle{340, 50, 100, 30}, "Save Command") {
-            cmd := strings.trim_space(string(state.curl_input[:]))
-            if len(cmd) > 0 {
-                state.edit_mode = true
-                state.edit_name_buffer = {}
-            } else {
-                state.error_msg = "Please enter a cURL command to save"
-            }
-        }
-        
-        // Saved commands list
-        raylib.GuiLabel(raylib.Rectangle{10, 90, 100, 30}, "Saved Commands:")
+	min_mem_size := clay.MinMemorySize()
+	memory := make([^]u8, min_mem_size)
+	arena := clay.CreateArenaWithCapacityAndMemory(uint(min_mem_size), memory)
 
-        _cmds := make([dynamic]string)
-        for cmd in state.saved_commands {
-            append(&_cmds, cmd.name)
-        }
-        selected := raylib.GuiListView(raylib.Rectangle{120, 90, 670, 150}, 
-            fmt.caprintf(strings.join({"test1", "test2"}, ";")), 
-            &state.response_scroll, &state.selected_command)
-        if selected != state.selected_command && selected >= 0 && int(selected) < len(state.saved_commands) {
-            state.selected_command = selected
-            copy(state.curl_input[:], state.saved_commands[selected].curl)
-        }
-        
-        // Edit/Delete buttons for saved commands
-        if state.selected_command >= 0 && int(state.selected_command) < len(state.saved_commands) {
-            if raylib.GuiButton(raylib.Rectangle{120, 250, 100, 30}, "Edit Name") {
-                state.edit_mode = true
-                copy(state.edit_name_buffer[:], state.saved_commands[state.selected_command].name)
-            }
-            if raylib.GuiButton(raylib.Rectangle{230, 250, 100, 30}, "Delete") {
-                ordered_remove(&state.saved_commands, state.selected_command)
-                save_commands()
-                state.selected_command = -1
-            }
-        }
-        
-        // Edit name popup
-        if state.edit_mode {
-            raylib.GuiLabel(raylib.Rectangle{120, 290, 100, 30}, "Command Name:")
-            if raylib.GuiTextBox(raylib.Rectangle{230, 290, 300, 30}, "state.edit_name_buffer[:]", 256, true) {
-                // Name input changed
-            }
-            if raylib.GuiButton(raylib.Rectangle{540, 290, 100, 30}, "Save") {
-                name := strings.trim_space(string(state.edit_name_buffer[:]))
-                if len(name) > 0 {
-                    if state.selected_command >= 0 && int(state.selected_command) < len(state.saved_commands) {
-                        // Edit existing
-                        state.saved_commands[state.selected_command].name = strings.clone(name)
-                    } else {
-                        // New command
-                        cmd := strings.clone(strings.trim_space(string(state.curl_input[:])))
-                        append(&state.saved_commands, Command{name = strings.clone(name), curl = cmd})
-                    }
-                    save_commands()
-                    state.edit_mode = false
-                } else {
-                    state.error_msg = "Please enter a command name"
-                }
-            }
-            if raylib.GuiButton(raylib.Rectangle{650, 290, 100, 30}, "Cancel") {
-                state.edit_mode = false
-            }
-        }
-        
-        // Response display
-        raylib.GuiLabel(raylib.Rectangle{10, 330, 100, 30}, "Response:")
-        raylib.GuiTextBox(raylib.Rectangle{120, 330, 670, 250}, "state.response[:]", MAX_RESPONSE, false)
-        
-        // Error message
-        if len(state.error_msg) > 0 {
-            raylib.GuiLabel(raylib.Rectangle{10, 590, 780, 30}, strings.clone_to_cstring(state.error_msg))
-        }
-        
-        raylib.EndDrawing()
-    }
+	clay.Initialize(
+		arena,
+		{cast(f32)raylib.GetScreenWidth(), cast(f32)raylib.GetScreenHeight()},
+		{handler = error_handler},
+	)
+	clay.SetMeasureTextFunction(measure_text, nil)
+
+	raylib.SetConfigFlags({.VSYNC_HINT, .WINDOW_RESIZABLE, .MSAA_4X_HINT})
+	raylib.InitWindow(windowWidth, windowHeight, "liteman")
+	raylib.SetTargetFPS(raylib.GetMonitorRefreshRate(0))
+
+	loadFont(FONT_ID_BODY_36, 36, "resources/Quicksand.ttf")
+	loadFont(FONT_ID_BODY_30, 30, "resources/Quicksand.ttf")
+	loadFont(FONT_ID_BODY_28, 28, "resources/Quicksand.ttf")
+	loadFont(FONT_ID_BODY_24, 24, "resources/Quicksand.ttf")
+	loadFont(FONT_ID_BODY_16, 16, "resources/Quicksand.ttf")
+	allocator := context.temp_allocator
+
+	for !raylib.WindowShouldClose() {
+		defer free_all(allocator)
+
+		windowWidth = raylib.GetScreenWidth()
+		windowHeight = raylib.GetScreenHeight()
+
+		clay.SetLayoutDimensions(
+			{cast(f32)raylib.GetScreenWidth(), cast(f32)raylib.GetScreenHeight()},
+		)
+		clay.SetPointerState(
+			transmute(clay.Vector2)raylib.GetMousePosition(),
+			raylib.IsMouseButtonDown(raylib.MouseButton.LEFT),
+		)
+		clay.UpdateScrollContainers(
+			false,
+			transmute(clay.Vector2)raylib.GetMouseWheelMoveV(),
+			raylib.GetFrameTime(),
+		)
+
+		render_commands := create_layout()
+
+		raylib.BeginDrawing()
+		clay_raylib_render(&render_commands)
+		raylib.EndDrawing()
+	}
 }
