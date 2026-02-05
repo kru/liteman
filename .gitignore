@@ -1,2 +1,4 @@
 .DS_store
 *.dSYM
+commands.json
+*.exe
