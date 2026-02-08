@@ -23,15 +23,8 @@ COLOR_WARNING :: clay.Color{220, 180, 80, 255}
 COLOR_ERROR :: clay.Color{220, 90, 90, 255}
 COLOR_ITEM_HOVER :: clay.Color{55, 58, 65, 255}
 
-// Platform-specific clip config for input sections
-// Mac needs horizontal clip to prevent long text from pushing layout wider
-when ODIN_OS == .Darwin {
-	MAC_INPUT_CLIP :: clay.ClipElementConfig {
-		horizontal = true,
-	}
-} else {
-	MAC_INPUT_CLIP :: clay.ClipElementConfig{}
-}
+SIDEBAR_WIDTH :: 280
+
 
 windowWidth: i32 = 1024
 windowHeight: i32 = 768
@@ -404,7 +397,7 @@ sidebar_component :: proc() {
 		id = clay.ID("Sidebar"),
 		layout = {
 			layoutDirection = .TopToBottom,
-			sizing = {width = clay.SizingFixed(280), height = clay.SizingGrow({})},
+			sizing = {width = clay.SizingFixed(SIDEBAR_WIDTH), height = clay.SizingGrow({})},
 			padding = {12, 12, 12, 12},
 			childGap = 12,
 		},
@@ -711,16 +704,20 @@ main_content_component :: proc() {
 	},
 	) {
 		// Top section: cURL input (1/4 height)
+		// Calculate fixed width to prevent layout expansion from long text
+		input_width := max(f32(windowWidth - SIDEBAR_WIDTH - 40), 100.0)
+
 		if clay.UI()(
 		{
 			id = clay.ID("InputSection"),
 			layout = {
 				layoutDirection = .TopToBottom,
-				sizing = {width = clay.SizingGrow({}), height = clay.SizingPercent(0.25)},
+				sizing = {
+					width = clay.SizingFixed(input_width),
+					height = clay.SizingPercent(0.25),
+				},
 				childGap = 8,
 			},
-			// Mac needs horizontal clip to prevent long text from pushing layout
-			clip = MAC_INPUT_CLIP,
 		},
 		) {
 			// Header with Save button
