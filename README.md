@@ -1,3 +1,5 @@
 ### Disclaimer
 
-This is personal use only purpose
+This is for a personal use only.
+
+![liteman-screeshot](resources/liteman_ss.png)
