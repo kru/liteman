@@ -144,7 +144,11 @@ handle_text_input :: proc(
 	cursor^ = clamp(cursor^, 0, length^)
 
 	shift_held := raylib.IsKeyDown(.LEFT_SHIFT) || raylib.IsKeyDown(.RIGHT_SHIFT)
-	ctrl_held := raylib.IsKeyDown(.LEFT_CONTROL) || raylib.IsKeyDown(.RIGHT_CONTROL)
+	ctrl_held :=
+		raylib.IsKeyDown(.LEFT_CONTROL) ||
+		raylib.IsKeyDown(.RIGHT_CONTROL) ||
+		raylib.IsKeyDown(.LEFT_SUPER) ||
+		raylib.IsKeyDown(.RIGHT_SUPER) // Mac Command key
 
 	// Helper to get selection range (sorted)
 	get_selection :: proc(
@@ -722,18 +726,26 @@ main_content_component :: proc() {
 				)
 			}
 
-			// Input area
+			// Input area with vertical scrolling
 			input_bg := focused_input == .CurlInput ? COLOR_INPUT_FOCUS : COLOR_INPUT
+			curl_scroll_id := clay.ID("CurlInputBox")
+			curl_scroll := clay.GetScrollContainerData(curl_scroll_id)
+			curl_scroll_offset: clay.Vector2 = {0, 0}
+			if curl_scroll.found && curl_scroll.scrollPosition != nil {
+				curl_scroll_offset = curl_scroll.scrollPosition^
+			}
+
 			if clay.UI()(
 			{
-				id = clay.ID("CurlInputBox"),
+				id = curl_scroll_id,
 				layout = {
+					layoutDirection = .TopToBottom,
 					sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
 					padding = {12, 12, 12, 12},
 				},
 				backgroundColor = input_bg,
 				cornerRadius = {6, 6, 6, 6},
-				clip = {vertical = true},
+				clip = {vertical = true, childOffset = curl_scroll_offset},
 			},
 			) {
 				curl_text := buffer_to_string(app_state.curl_input[:], app_state.curl_input_len)
@@ -741,14 +753,24 @@ main_content_component :: proc() {
 					clay.TextDynamic(
 						curl_text,
 						clay.TextConfig(
-							{textColor = COLOR_TEXT, fontSize = 18, fontId = FONT_ID_BODY_18},
+							{
+								textColor = COLOR_TEXT,
+								fontSize = 18,
+								fontId = FONT_ID_BODY_18,
+								wrapMode = .Words,
+							},
 						),
 					)
 				} else {
 					clay.Text(
 						"curl https://api.example.com/endpoint",
 						clay.TextConfig(
-							{textColor = COLOR_TEXT_DIM, fontSize = 18, fontId = FONT_ID_BODY_18},
+							{
+								textColor = COLOR_TEXT_DIM,
+								fontSize = 18,
+								fontId = FONT_ID_BODY_18,
+								wrapMode = .Words,
+							},
 						),
 					)
 				}
@@ -2092,7 +2114,6 @@ main :: proc() {
 	}
 }
 
-// Basic syntax highlighting for JSON
 // Basic syntax highlighting for JSON
 render_highlighted_json :: proc(json_str: string) {
 	if len(json_str) == 0 {return}
