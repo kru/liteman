@@ -726,7 +726,7 @@ main_content_component :: proc() {
 				)
 			}
 
-			// Input area with vertical scrolling
+			// Input area with vertical scrolling - wrapped in horizontal container to constrain width
 			input_bg := focused_input == .CurlInput ? COLOR_INPUT_FOCUS : COLOR_INPUT
 			curl_scroll_id := clay.ID("CurlInputBox")
 			curl_scroll := clay.GetScrollContainerData(curl_scroll_id)
@@ -735,44 +735,57 @@ main_content_component :: proc() {
 				curl_scroll_offset = curl_scroll.scrollPosition^
 			}
 
+			// Horizontal wrapper to constrain width (like ResponseContent)
 			if clay.UI()(
 			{
-				id = curl_scroll_id,
 				layout = {
-					layoutDirection = .TopToBottom,
+					layoutDirection = .LeftToRight,
 					sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
-					padding = {12, 12, 12, 12},
 				},
-				backgroundColor = input_bg,
-				cornerRadius = {6, 6, 6, 6},
-				clip = {vertical = true, childOffset = curl_scroll_offset},
 			},
 			) {
-				curl_text := buffer_to_string(app_state.curl_input[:], app_state.curl_input_len)
-				if app_state.curl_input_len > 0 {
-					clay.TextDynamic(
-						curl_text,
-						clay.TextConfig(
-							{
-								textColor = COLOR_TEXT,
-								fontSize = 18,
-								fontId = FONT_ID_BODY_18,
-								wrapMode = .Words,
-							},
-						),
+				if clay.UI()(
+				{
+					id = curl_scroll_id,
+					layout = {
+						layoutDirection = .TopToBottom,
+						sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
+						padding = {12, 12, 12, 12},
+					},
+					backgroundColor = input_bg,
+					cornerRadius = {6, 6, 6, 6},
+					clip = {horizontal = true, vertical = true, childOffset = curl_scroll_offset},
+				},
+				) {
+					curl_text := buffer_to_string(
+						app_state.curl_input[:],
+						app_state.curl_input_len,
 					)
-				} else {
-					clay.Text(
-						"curl https://api.example.com/endpoint",
-						clay.TextConfig(
-							{
-								textColor = COLOR_TEXT_DIM,
-								fontSize = 18,
-								fontId = FONT_ID_BODY_18,
-								wrapMode = .Words,
-							},
-						),
-					)
+					if app_state.curl_input_len > 0 {
+						clay.TextDynamic(
+							curl_text,
+							clay.TextConfig(
+								{
+									textColor = COLOR_TEXT,
+									fontSize = 18,
+									fontId = FONT_ID_BODY_18,
+									wrapMode = .Words,
+								},
+							),
+						)
+					} else {
+						clay.Text(
+							"curl https://api.example.com/endpoint",
+							clay.TextConfig(
+								{
+									textColor = COLOR_TEXT_DIM,
+									fontSize = 18,
+									fontId = FONT_ID_BODY_18,
+									wrapMode = .Words,
+								},
+							),
+						)
+					}
 				}
 			}
 
