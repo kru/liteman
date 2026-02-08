@@ -23,6 +23,16 @@ COLOR_WARNING :: clay.Color{220, 180, 80, 255}
 COLOR_ERROR :: clay.Color{220, 90, 90, 255}
 COLOR_ITEM_HOVER :: clay.Color{55, 58, 65, 255}
 
+// Platform-specific clip config for input sections
+// Mac needs horizontal clip to prevent long text from pushing layout wider
+when ODIN_OS == .Darwin {
+	MAC_INPUT_CLIP :: clay.ClipElementConfig {
+		horizontal = true,
+	}
+} else {
+	MAC_INPUT_CLIP :: clay.ClipElementConfig{}
+}
+
 windowWidth: i32 = 1024
 windowHeight: i32 = 768
 
@@ -709,6 +719,8 @@ main_content_component :: proc() {
 				sizing = {width = clay.SizingGrow({}), height = clay.SizingPercent(0.25)},
 				childGap = 8,
 			},
+			// Mac needs horizontal clip to prevent long text from pushing layout
+			clip = MAC_INPUT_CLIP,
 		},
 		) {
 			// Header with Save button
@@ -726,7 +738,7 @@ main_content_component :: proc() {
 				)
 			}
 
-			// Input area with vertical scrolling - wrapped in horizontal container to constrain width
+			// Input area with vertical scrolling
 			input_bg := focused_input == .CurlInput ? COLOR_INPUT_FOCUS : COLOR_INPUT
 			curl_scroll_id := clay.ID("CurlInputBox")
 			curl_scroll := clay.GetScrollContainerData(curl_scroll_id)
@@ -735,57 +747,44 @@ main_content_component :: proc() {
 				curl_scroll_offset = curl_scroll.scrollPosition^
 			}
 
-			// Horizontal wrapper to constrain width (like ResponseContent)
 			if clay.UI()(
 			{
+				id = curl_scroll_id,
 				layout = {
-					layoutDirection = .LeftToRight,
+					layoutDirection = .TopToBottom,
 					sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
+					padding = {12, 12, 12, 12},
 				},
+				backgroundColor = input_bg,
+				cornerRadius = {6, 6, 6, 6},
+				clip = {vertical = true, childOffset = curl_scroll_offset},
 			},
 			) {
-				if clay.UI()(
-				{
-					id = curl_scroll_id,
-					layout = {
-						layoutDirection = .TopToBottom,
-						sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
-						padding = {12, 12, 12, 12},
-					},
-					backgroundColor = input_bg,
-					cornerRadius = {6, 6, 6, 6},
-					clip = {horizontal = true, vertical = true, childOffset = curl_scroll_offset},
-				},
-				) {
-					curl_text := buffer_to_string(
-						app_state.curl_input[:],
-						app_state.curl_input_len,
+				curl_text := buffer_to_string(app_state.curl_input[:], app_state.curl_input_len)
+				if app_state.curl_input_len > 0 {
+					clay.TextDynamic(
+						curl_text,
+						clay.TextConfig(
+							{
+								textColor = COLOR_TEXT,
+								fontSize = 18,
+								fontId = FONT_ID_BODY_18,
+								wrapMode = .Words,
+							},
+						),
 					)
-					if app_state.curl_input_len > 0 {
-						clay.TextDynamic(
-							curl_text,
-							clay.TextConfig(
-								{
-									textColor = COLOR_TEXT,
-									fontSize = 18,
-									fontId = FONT_ID_BODY_18,
-									wrapMode = .Words,
-								},
-							),
-						)
-					} else {
-						clay.Text(
-							"curl https://api.example.com/endpoint",
-							clay.TextConfig(
-								{
-									textColor = COLOR_TEXT_DIM,
-									fontSize = 18,
-									fontId = FONT_ID_BODY_18,
-									wrapMode = .Words,
-								},
-							),
-						)
-					}
+				} else {
+					clay.Text(
+						"curl https://api.example.com/endpoint",
+						clay.TextConfig(
+							{
+								textColor = COLOR_TEXT_DIM,
+								fontSize = 18,
+								fontId = FONT_ID_BODY_18,
+								wrapMode = .Words,
+							},
+						),
+					)
 				}
 			}
 
