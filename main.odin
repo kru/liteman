@@ -23,6 +23,16 @@ COLOR_WARNING :: clay.Color{220, 180, 80, 255}
 COLOR_ERROR :: clay.Color{220, 90, 90, 255}
 COLOR_ITEM_HOVER :: clay.Color{55, 58, 65, 255}
 
+// Syntax highlighting colors for curl commands
+COLOR_SYN_COMMAND :: clay.Color{120, 120, 130, 255} // dim gray for "curl"
+COLOR_SYN_FLAG :: clay.Color{100, 160, 240, 255} // blue for flags
+COLOR_SYN_METHOD :: clay.Color{230, 180, 80, 255} // orange for HTTP methods
+COLOR_SYN_URL :: clay.Color{100, 200, 150, 255} // green for URLs
+COLOR_SYN_HEADER :: clay.Color{180, 140, 220, 255} // purple for header names
+COLOR_SYN_STRING :: clay.Color{140, 200, 200, 255} // cyan for strings
+COLOR_SYN_JSON :: clay.Color{220, 200, 100, 255} // yellow for JSON braces
+COLOR_SYN_ERROR :: clay.Color{220, 80, 80, 255} // red for errors
+
 SIDEBAR_WIDTH :: 280
 
 
@@ -388,6 +398,39 @@ get_filtered_commands :: proc() -> [dynamic]^SavedCommand {
 	}
 
 	return result
+}
+
+// Get color for a token type (for syntax highlighting)
+get_token_color :: proc(token_type: TokenType, has_error: bool) -> clay.Color {
+	if has_error {
+		return COLOR_SYN_ERROR
+	}
+
+	switch token_type {
+	case .Command:
+		return COLOR_SYN_COMMAND
+	case .Flag:
+		return COLOR_SYN_FLAG
+	case .Method:
+		return COLOR_SYN_METHOD
+	case .URL:
+		return COLOR_SYN_URL
+	case .HeaderName:
+		return COLOR_SYN_HEADER
+	case .HeaderValue:
+		return COLOR_TEXT_DIM
+	case .String:
+		return COLOR_SYN_STRING
+	case .JsonBrace:
+		return COLOR_SYN_JSON
+	case .Data:
+		return COLOR_TEXT
+	case .Whitespace:
+		return COLOR_TEXT
+	case .Error:
+		return COLOR_SYN_ERROR
+	}
+	return COLOR_TEXT
 }
 
 // Create the sidebar with search and command list
@@ -759,17 +802,64 @@ main_content_component :: proc() {
 			) {
 				curl_text := buffer_to_string(app_state.curl_input[:], app_state.curl_input_len)
 				if app_state.curl_input_len > 0 {
-					clay.TextDynamic(
-						curl_text,
-						clay.TextConfig(
-							{
-								textColor = COLOR_TEXT,
-								fontSize = 18,
-								fontId = FONT_ID_BODY_18,
-								wrapMode = .Words,
-							},
-						),
+					// Tokenize the curl command (returns processed string with backslashes removed)
+					tokens, processed_text := tokenize_curl(curl_text, context.temp_allocator)
+					display_lines := format_display_lines(
+						processed_text,
+						tokens[:],
+						context.temp_allocator,
 					)
+
+					// Render each display line
+					for line_idx := 0; line_idx < len(display_lines); line_idx += 1 {
+						line := display_lines[line_idx]
+
+						// Create a horizontal layout for this line
+						if clay.UI()(
+						{
+							id = clay.ID("CurlLine", u32(line_idx)),
+							layout = {
+								layoutDirection = .LeftToRight,
+								sizing = {
+									width = clay.SizingGrow({}),
+									height = clay.SizingFit({}),
+								},
+							},
+						},
+						) {
+							// Add indentation if needed
+							if line.indent > 0 {
+								clay.Text(
+									"     ", // 5 spaces for continuation
+									clay.TextConfig(
+										{
+											textColor = COLOR_TEXT,
+											fontSize = 18,
+											fontId = FONT_ID_BODY_18,
+										},
+									),
+								)
+							}
+
+							// Render each token with its color
+							for token_idx := 0; token_idx < len(line.tokens); token_idx += 1 {
+								token := line.tokens[token_idx]
+								token_text := processed_text[token.start:token.end]
+								token_color := get_token_color(token.type, token.has_error)
+
+								clay.TextDynamic(
+									token_text,
+									clay.TextConfig(
+										{
+											textColor = token_color,
+											fontSize = 18,
+											fontId = FONT_ID_BODY_18,
+										},
+									),
+								)
+							}
+						}
+					}
 				} else {
 					clay.Text(
 						"curl https://api.example.com/endpoint",
