@@ -427,6 +427,10 @@ get_token_color :: proc(token_type: TokenType, has_error: bool) -> clay.Color {
 		return COLOR_TEXT
 	case .Whitespace:
 		return COLOR_TEXT
+	case .Backslash:
+		return COLOR_SYN_FLAG // Highlight backslash like a flag? or Operator color
+	case .Newline:
+		return COLOR_TEXT
 	case .Error:
 		return COLOR_SYN_ERROR
 	}
@@ -757,7 +761,7 @@ main_content_component :: proc() {
 				layoutDirection = .TopToBottom,
 				sizing = {
 					width = clay.SizingFixed(input_width),
-					height = clay.SizingPercent(0.25),
+					height = clay.SizingPercent(0.40),
 				},
 				childGap = 8,
 			},
@@ -800,8 +804,8 @@ main_content_component :: proc() {
 				clip = {vertical = true, childOffset = curl_scroll_offset},
 			},
 			) {
-				curl_text := buffer_to_string(app_state.curl_input[:], app_state.curl_input_len)
-				if app_state.curl_input_len > 0 {
+				curl_text := editor_get_text(&app_state.curl_editor)
+				if len(app_state.curl_editor.text) > 0 {
 					// Tokenize the curl command (returns processed string with backslashes removed)
 					tokens, processed_text := tokenize_curl(curl_text, context.temp_allocator)
 					display_lines := format_display_lines(
@@ -844,18 +848,26 @@ main_content_component :: proc() {
 							// Render each token with its color
 							for token_idx := 0; token_idx < len(line.tokens); token_idx += 1 {
 								token := line.tokens[token_idx]
-								token_text := processed_text[token.start:token.end]
-								token_color := get_token_color(token.type, token.has_error)
+								text := processed_text[token.start:token.end]
+								color := get_token_color(token.type, token.has_error)
 
 								clay.TextDynamic(
-									token_text,
+									text,
 									clay.TextConfig(
 										{
-											textColor = token_color,
+											textColor = color,
 											fontSize = 18,
 											fontId = FONT_ID_BODY_18,
 										},
 									),
+								)
+							}
+
+							// Ensure empty lines have height (for cursor position)
+							if len(line.tokens) == 0 && line.indent == 0 {
+								clay.Text(
+									" ",
+									clay.TextConfig({fontSize = 18, fontId = FONT_ID_BODY_18}),
 								)
 							}
 						}
@@ -1257,7 +1269,7 @@ calculate_cursor_from_click :: proc(
 	length: int,
 	click_x: f32,
 	click_y: f32,
-	container_width: f32,
+	container_width: f32, // Unused for wrapping now
 	font_id: u16,
 	font_size: u16,
 ) -> int {
@@ -1266,139 +1278,161 @@ calculate_cursor_from_click :: proc(
 	font := raylib_fonts[font_id].font
 	line_height := f32(font_size)
 
-	current_x: f32 = 0
+	// We strictly use the display lines for hit testing
+	text_str := string(text[:length])
+	tokens, processed_text := tokenize_curl(text_str, context.temp_allocator)
+	display_lines := format_display_lines(processed_text, tokens[:], context.temp_allocator)
+
 	current_y: f32 = 0
 
-	i := 0
-	for i < length {
-		char := text[i]
-
-		// Handle explicit newlines
-		if char == '\n' {
-			if click_y >= current_y && click_y < current_y + line_height {
-				// Clicked on this line, but past the text (since \n ends line)
-				return i
-			}
-			current_x = 0
-			current_y += line_height
-			i += 1
-			continue
-		}
-
-		if char < 32 {
-			i += 1
-			continue
-		}
-
-		// Word wrapping logic
-		is_start_of_word := (i == 0 || text[i - 1] <= 32) && char > 32
-		if is_start_of_word {
-			// Measure word
-			word_width: f32 = 0
-			for j := i; j < length; j += 1 {
-				if text[j] <= 32 {break}
-				word_width += get_glyph_width(font, text[j])
-			}
-
-			// Check if word fits
-			if current_x + word_width > container_width && current_x > 0 {
-				current_x = 0
-				current_y += line_height
-			}
-		}
-
-		char_width := get_glyph_width(font, char)
-
-		// Check for wrapping of single long words or spaces
-		if current_x + char_width > container_width {
-			current_x = 0
-			current_y += line_height
-		}
-
-		// Check if click is on this line
+	// 1. Find the Line
+	target_line_idx := -1
+	for i := 0; i < len(display_lines); i += 1 {
 		if click_y >= current_y && click_y < current_y + line_height {
-			// Check if click is within this character (use midpoint)
-			if click_x < current_x + char_width / 2 {
-				return i
-			}
-			// If click is past the last character of the line, return next index
-			// But we iterate char by char. If we reach here, it means we haven't returned yet.
-			// Continue to check next char.
-		} else if click_y < current_y {
-			// Click was on previous line
-			return i
+			target_line_idx = i
+			break
 		}
-
-		current_x += char_width
-		i += 1
+		current_y += line_height
 	}
 
-	return length // Click is past the end of text
+	if target_line_idx == -1 {
+		// Clicked below all lines, go to end
+		return length
+	}
+
+	// 2. Find the Char in Line
+	line := display_lines[target_line_idx]
+	current_x: f32 = f32(line.indent) * get_glyph_width(font, ' ') // Start with indentation
+
+	// If clicked before indentation
+	if click_x < current_x {
+		// Return start of first token in line
+		if len(line.tokens) > 0 {
+			// Map back to raw index... tricky.
+			// Let's assume for now 1:1 if no backslashes.
+			// We need a robust way to map.
+			return line.tokens[0].start
+		}
+		return 0 // Should not happen if lines exist
+	}
+
+	for token in line.tokens {
+		token_text := processed_text[token.start:token.end]
+
+		for i := 0; i < len(token_text); i += 1 {
+			char := token_text[i]
+			char_width := get_glyph_width(font, u8(char))
+
+			// Center hit test
+			if click_x < current_x + char_width { 	// Hit this char.
+				// Return index.
+				// Index is into PROCESSED text which is now SAME as raw text
+				return token.start + i
+			}
+
+			current_x += char_width
+		}
+	}
+
+	// Clicked past end of line content
+	if len(line.tokens) > 0 {
+		last_token := line.tokens[len(line.tokens) - 1]
+		return last_token.end
+	}
+
+	return length
 }
+
+// Helper to map index removed - raw and process are now 1:1
+
+// Helper to map raw index to processed index removed
 
 // Calculate position (x, y) for a given index in wrapped text
 calculate_wrapped_position :: proc(
 	text: []u8,
 	target_index: int,
-	container_width: f32,
+	container_width: f32, // Unused
 	font_id: u16,
 	font_size: u16,
 ) -> (
 	f32,
 	f32,
 ) {
-	if target_index <= 0 {return 0, 0}
+	if target_index < 0 {return 0, 0}
+
+	// Use tokenizer layout
+	text_str := string(text)
+	tokens, processed_text := tokenize_curl(text_str, context.temp_allocator)
+	display_lines := format_display_lines(processed_text, tokens[:], context.temp_allocator)
+
+	// Map raw target index to processed index -> 1:1 mapping now
+	target_processed := target_index
 
 	font := raylib_fonts[font_id].font
 	line_height := f32(font_size)
 
-	current_x: f32 = 0
 	current_y: f32 = 0
 
-	i := 0
-	for i < target_index {
-		if i >= len(text) {break}
-		char := text[i]
+	// Find where this index falls
+	for line in display_lines {
+		current_x := f32(line.indent) * get_glyph_width(font, ' ')
 
-		if char == '\n' {
-			current_x = 0
-			current_y += line_height
-			i += 1
-			continue
-		}
+		for token in line.tokens {
+			token_len := token.end - token.start
 
-		if char < 32 {
-			i += 1
-			continue
-		}
+			// If target is within this token
+			if target_processed >= token.start && target_processed <= token.end {
+				// Calculate offset within token
+				offset := target_processed - token.start
+				token_text := processed_text[token.start:token.end]
 
-		// Word wrapping logic
-		is_start_of_word := (i == 0 || text[i - 1] <= 32) && char > 32
-		if is_start_of_word {
-			word_width: f32 = 0
-			for j := i; j < len(text); j += 1 {
-				if text[j] <= 32 {break}
-				word_width += get_glyph_width(font, text[j])
+				for i := 0; i < offset; i += 1 {
+					current_x += get_glyph_width(font, u8(token_text[i]))
+				}
+				return current_x, current_y
 			}
 
-			if current_x + word_width > container_width && current_x > 0 {
-				current_x = 0
-				current_y += line_height
+			// Advance X by full token width
+			token_text := processed_text[token.start:token.end]
+			for char in token_text {
+				current_x += get_glyph_width(font, u8(char))
 			}
 		}
 
-		char_width := get_glyph_width(font, char)
-
-		if current_x + char_width > container_width {
-			current_x = 0
-			current_y += line_height
+		// If target is exactly at the end of this line's content (and not found in tokens above)
+		// Check if map points to end of last token?
+		if len(line.tokens) > 0 {
+			last_token := line.tokens[len(line.tokens) - 1]
+			if target_processed == last_token.end {
+				return current_x, current_y
+			}
 		}
 
-		current_x += char_width
-		i += 1
+		// If empty line (just indentation?)
+		if len(line.tokens) == 0 && target_processed == 0 {
+			// Should verify if this ever happens for implicit empty lines?
+		}
+
+		current_y += line_height
 	}
 
-	return current_x, current_y
+	// If not found (e.g. at very end), return end of last line
+	if len(display_lines) > 0 {
+		// Actually current_x/y would be at start of next line loop if we exited.
+		// Let's reset and find last line end.
+
+		last_line := display_lines[len(display_lines) - 1]
+		end_x := f32(last_line.indent) * get_glyph_width(font, ' ')
+		for token in last_line.tokens {
+			token_text := processed_text[token.start:token.end]
+			for char in token_text {
+				end_x += get_glyph_width(font, u8(char))
+			}
+		}
+		return end_x, f32(len(display_lines) - 1) * line_height
+	}
+
+	return 0, 0
 }
 
 // Draw blinking cursor for focused input
@@ -1428,13 +1462,13 @@ draw_text_cursor :: proc() {
 		sel_anchor = app_state.search_sel_anchor
 	case .CurlInput:
 		element_id = clay.ID("CurlInputBox")
-		cursor_pos = app_state.curl_cursor
-		text_buffer = app_state.curl_input[:]
-		text_len = app_state.curl_input_len
+		cursor_pos = app_state.curl_editor.cursor
+		text_buffer = app_state.curl_editor.text[:]
+		text_len = len(app_state.curl_editor.text)
 		font_id = FONT_ID_BODY_18
 		padding_left = 12
 		padding_top = 12
-		sel_anchor = app_state.curl_sel_anchor
+		sel_anchor = app_state.curl_editor.selection_anchor
 	case .NameInput:
 		// For editing saved command names
 		if editing_id, ok := app_state.editing_id.?; ok {
@@ -1598,8 +1632,8 @@ handle_interactions :: proc() {
 			click_y := mouse_y - bounds_data.boundingBox.y - 12 // padding_y
 
 			new_cursor := calculate_cursor_from_click(
-				app_state.curl_input[:],
-				app_state.curl_input_len,
+				app_state.curl_editor.text[:],
+				len(app_state.curl_editor.text),
 				click_x,
 				click_y,
 				bounds_data.boundingBox.width - 24, // width minus padding
@@ -1610,11 +1644,11 @@ handle_interactions :: proc() {
 			if raylib.IsMouseButtonPressed(.LEFT) {
 				focused_input = .CurlInput
 				// Start selection - set anchor and cursor to same position
-				app_state.curl_sel_anchor = new_cursor
-				app_state.curl_cursor = new_cursor
+				app_state.curl_editor.selection_anchor = new_cursor
+				app_state.curl_editor.cursor = new_cursor
 			} else if raylib.IsMouseButtonDown(.LEFT) && focused_input == .CurlInput {
 				// Dragging - update cursor position (anchor stays at start)
-				app_state.curl_cursor = new_cursor
+				app_state.curl_editor.cursor = new_cursor
 			}
 		}
 	}
@@ -1714,15 +1748,23 @@ handle_interactions :: proc() {
 			&app_state.search_sel_anchor,
 		)
 	case .CurlInput:
-		handle_text_input(
-			app_state.curl_input[:],
-			&app_state.curl_input_len,
-			32768,
-			&app_state.curl_cursor,
-			&app_state.curl_sel_anchor,
-		)
+		// Get element data for width
+		bounds_data := clay.GetElementData(clay.ID("CurlInputBox"))
+		width: f32 = 0
+		if bounds_data.found {
+			width = bounds_data.boundingBox.width - 24
+		}
 
-		// Enter to run
+		editor_handle_input(&app_state.curl_editor, width, FONT_ID_BODY_18, 18)
+
+		// Check for run command (Ctrl+Enter is handled in editor_handle_input for newlines, but we want it to run?)
+		// editor_handle_input handles basic typing.
+		// If we want Ctrl+Enter to RUN, we should check it here OR inside editor (and return a flag/callback).
+		// Current editor implementation does NOT consume Ctrl+Enter for newlines, it lets it pass if !ctrl.
+		// Implementation in editor.odin:
+		// if raylib.IsKeyPressed(.ENTER) ... { if !ctrl { insert("\n") } }
+		// So Ctrl+Enter does nothing in editor. We can catch it here.
+
 		if raylib.IsKeyPressed(.ENTER) && raylib.IsKeyDown(.LEFT_CONTROL) {
 			execute_curl_command()
 		}
@@ -1878,10 +1920,7 @@ save_editing_command :: proc() {
 					new_command := cmd.command
 					if selected_id, sel_ok := app_state.selected_id.?;
 					   sel_ok && selected_id == editing_id {
-						new_command = buffer_to_string(
-							app_state.curl_input[:],
-							app_state.curl_input_len,
-						)
+						new_command = editor_get_text(&app_state.curl_editor)
 					}
 
 					update_command(&app_state, editing_id, new_name, new_command)
@@ -1896,7 +1935,7 @@ save_editing_command :: proc() {
 
 // Execute the current cURL command
 execute_curl_command :: proc() {
-	if app_state.curl_input_len == 0 {return}
+	if len(app_state.curl_editor.text) == 0 {return}
 
 	// Clear previous response
 	// Clear previous response
@@ -1915,7 +1954,7 @@ execute_curl_command :: proc() {
 
 	app_state.request_state = .Loading
 
-	command := buffer_to_string(app_state.curl_input[:], app_state.curl_input_len)
+	command := editor_get_text(&app_state.curl_editor)
 	result := run_curl(command)
 
 	if result.success {
@@ -1931,13 +1970,13 @@ execute_curl_command :: proc() {
 
 // Save current command
 save_current_command :: proc() {
-	if app_state.curl_input_len == 0 {return}
+	if len(app_state.curl_editor.text) == 0 {return}
 
-	command := buffer_to_string(app_state.curl_input[:], app_state.curl_input_len)
+	command := editor_get_text(&app_state.curl_editor)
 
 	// Use first 10 characters of command as default name (or less if command is shorter)
-	name_len := min(app_state.curl_input_len, 10)
-	name := strings.clone(buffer_to_string(app_state.curl_input[:], name_len))
+	name_len := min(len(command), 10)
+	name := strings.clone(command[:name_len])
 	add_command(&app_state, name, command)
 }
 
@@ -1945,10 +1984,8 @@ save_current_command :: proc() {
 load_command :: proc(cmd: ^SavedCommand) {
 	app_state.selected_id = cmd.id
 
-	// Copy command to input buffer
-	cmd_bytes := transmute([]u8)cmd.command
-	copy(app_state.curl_input[:], cmd_bytes)
-	app_state.curl_input_len = len(cmd.command)
+	// Copy command to editor
+	editor_set_text(&app_state.curl_editor, cmd.command)
 }
 
 clay_raylib_render :: proc(

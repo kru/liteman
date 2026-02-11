@@ -24,11 +24,8 @@ AppState :: struct {
 	search_cursor:                    int,
 	search_sel_anchor:                Maybe(int), // Selection anchor (nil = no selection)
 
-	// UI state - cURL input
-	curl_input:                       [32768]u8, // 32 KiB
-	curl_input_len:                   int,
-	curl_cursor:                      int,
-	curl_sel_anchor:                  Maybe(int), // Selection anchor (nil = no selection)
+	// UI state - cURL editor
+	curl_editor:                      Editor,
 
 	// UI state - Command name input (for saving)
 	name_input:                       [256]u8,
@@ -69,7 +66,12 @@ ResponseTab :: enum {
 
 // Initialize app state with defaults
 init_app_state :: proc() -> AppState {
-	return AppState{commands = make([dynamic]SavedCommand), next_id = 1, request_state = .Idle}
+	return AppState {
+		commands = make([dynamic]SavedCommand),
+		next_id = 1,
+		request_state = .Idle,
+		curl_editor = init_editor(),
+	}
 }
 
 // Cleanup app state
@@ -89,4 +91,6 @@ destroy_app_state :: proc(state: ^AppState) {
 	if len(state.error_message) > 0 {
 		delete(state.error_message)
 	}
+
+	destroy_editor(&state.curl_editor)
 }

@@ -14,6 +14,8 @@ TokenType :: enum {
 	JsonBrace, // { } [ ]
 	Data, // unquoted data
 	Whitespace, // spaces between tokens
+	Backslash, // \ character
+	Newline, // \n character
 	Error, // unclosed quotes, invalid syntax
 }
 
@@ -62,29 +64,10 @@ tokenize_curl :: proc(
 		return tokens, ""
 	}
 
-	// Preprocess: Remove backslash line continuations
-	// This creates a clean string where flags are properly recognized
-	clean_input := strings.builder_make(allocator)
-	for i := 0; i < len(input); i += 1 {
-		ch := input[i]
-		if ch == '\\' {
-			// Skip backslash and any following newlines (line continuation)
-			for i + 1 < len(input) && (input[i + 1] == '\n' || input[i + 1] == '\r') {
-				i += 1
-			}
-			// Add a space to separate tokens if needed
-			if strings.builder_len(clean_input) > 0 {
-				last_char := strings.to_string(clean_input)[strings.builder_len(clean_input) - 1]
-				if last_char != ' ' && last_char != '\t' {
-					strings.write_byte(&clean_input, ' ')
-				}
-			}
-		} else {
-			strings.write_byte(&clean_input, ch)
-		}
-	}
-
-	processed := strings.to_string(clean_input)
+	// Clean input IS the input now (we want to preserve exact characters for editing)
+	// clean_input := strings.builder_make(allocator)
+	// ... (removed stripping logic) ...
+	processed := input // No processing/stripping
 
 	pos := 0
 	last_flag := "" // Track the last flag for context (e.g., -H means next is header)
@@ -99,6 +82,26 @@ tokenize_curl :: proc(
 				pos += 1
 			}
 			append(&tokens, Token{type = .Whitespace, start = start, end = pos})
+			continue
+		}
+
+		// Handle Newlines
+		if processed[pos] == '\n' || processed[pos] == '\r' {
+			start := pos
+			// Handle CRLF or just LF
+			if processed[pos] == '\r' && pos + 1 < len(processed) && processed[pos + 1] == '\n' {
+				pos += 2
+			} else {
+				pos += 1
+			}
+			append(&tokens, Token{type = .Newline, start = start, end = pos})
+			continue
+		}
+
+		// Handle Backslash
+		if processed[pos] == '\\' {
+			append(&tokens, Token{type = .Backslash, start = pos, end = pos + 1})
+			pos += 1
 			continue
 		}
 
@@ -207,52 +210,6 @@ DisplayLine :: struct {
 	indent: int, // number of spaces to indent
 }
 
-// Flags that should start a new line
-should_break_before :: proc(input: string, token: Token) -> bool {
-	if token.type != .Flag {return false}
-
-	flag_str := input[token.start:token.end]
-	break_flags := []string {
-		"-X",
-		"-H",
-		"-d",
-		"--header",
-		"--data",
-		"--data-raw",
-		"--data-binary",
-		"--data-urlencode",
-		"-F",
-		"--form",
-		"-u",
-		"--user",
-		"-A",
-		"--user-agent",
-		"-e",
-		"--referer",
-		"-b",
-		"--cookie",
-		"-c",
-		"--cookie-jar",
-		"-o",
-		"--output",
-		"-O",
-		"--remote-name",
-		"-L",
-		"--location",
-		"-k",
-		"--insecure",
-		"-v",
-		"--verbose",
-		"-s",
-		"--silent",
-	}
-
-	for bf in break_flags {
-		if flag_str == bf {return true}
-	}
-	return false
-}
-
 // Split tokens into display lines with proper breaks
 format_display_lines :: proc(
 	input: string,
@@ -271,29 +228,24 @@ format_display_lines :: proc(
 		indent = 0,
 	}
 
-	INDENT_SIZE :: 5 // Spaces for continuation lines
 	is_first_line := true
 
 	for i := 0; i < len(tokens); i += 1 {
 		token := tokens[i]
 
-		// Check if we should start a new line before this token
-		if !is_first_line && should_break_before(input, token) {
-			// Strip trailing whitespace from current line
-			for len(current_line.tokens) > 0 &&
-			    current_line.tokens[len(current_line.tokens) - 1].type == .Whitespace {
-				pop(&current_line.tokens)
+		// Explicit Newline
+		if token.type == .Newline {
+			// Finish current line
+			append(&lines, current_line)
+			// Start new line
+			current_line = DisplayLine {
+				tokens = make([dynamic]Token, allocator),
+				indent = 0,
 			}
-
-			// Start new line if current has content
-			if len(current_line.tokens) > 0 {
-				append(&lines, current_line)
-				current_line = DisplayLine {
-					tokens = make([dynamic]Token, allocator),
-					indent = INDENT_SIZE,
-				}
-			}
+			is_first_line = true
+			continue
 		}
+
 
 		// Skip whitespace at the start of a line
 		if token.type == .Whitespace && len(current_line.tokens) == 0 {
@@ -305,9 +257,7 @@ format_display_lines :: proc(
 	}
 
 	// Don't forget the last line
-	if len(current_line.tokens) > 0 {
-		append(&lines, current_line)
-	}
+	append(&lines, current_line)
 
 	return lines
 }

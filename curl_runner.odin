@@ -6,7 +6,6 @@ import "core:strconv"
 import "core:strings"
 
 // Result from running a cURL command
-// Result from running a cURL command
 CurlResult :: struct {
 	headers:     string,
 	body:        string,
@@ -22,16 +21,10 @@ run_curl :: proc(command: string) -> CurlResult {
 		success     = false,
 	}
 
-	// Validate command starts with "curl"
-	// Preprocess to handle multi-line commands (remove backslash + newline)
-	// Replace both \r\n and \n to be safe
-	sanitized_command, _ := strings.replace_all(command, "\\\r\n", " ", context.temp_allocator)
-	sanitized_command, _ = strings.replace_all(
-		sanitized_command,
-		"\\\n",
-		" ",
-		context.temp_allocator,
-	)
+	// Preprocess to handle multi-line commands:
+	// 1. Remove backslash line continuations (join lines)
+	// 2. Convert unquoted newlines to spaces
+	sanitized_command := sanitize_curl_command_string(command, context.temp_allocator)
 
 	trimmed := strings.trim_space(sanitized_command)
 	if !strings.has_prefix(trimmed, "curl") {
@@ -202,6 +195,89 @@ run_curl :: proc(command: string) -> CurlResult {
 	result.success = true
 
 	return result
+}
+
+// Helper to sanitize multi-line curl commands
+sanitize_curl_command_string :: proc(input: string, allocator := context.allocator) -> string {
+	builder := strings.builder_make(allocator)
+
+	// Convert to bytes for easy indexing
+	chars := transmute([]u8)input
+
+	in_quote: u8 = 0 // 0 means not in quote, otherwise holds '"' or '\''
+	i := 0
+
+	for i < len(chars) {
+		c := chars[i]
+
+		// Handle Backslash (Escape or Line Continuation)
+		if c == '\\' {
+			// Check for line continuation (backslash at end of line)
+			// This applies ANYWHERE, even inside quotes in most shells
+			if i + 1 < len(chars) {
+				next := chars[i + 1]
+				if next == '\n' {
+					i += 2
+					continue
+				}
+				if next == '\r' && i + 2 < len(chars) && chars[i + 2] == '\n' {
+					i += 3
+					continue
+				}
+			}
+
+			// Just a regular backslash (maybe escaping something)
+			strings.write_byte(&builder, c)
+			i += 1
+
+			// If we just wrote a blackslash, we should write the next char literally?
+			// But if we do that we might miss special handling
+			continue
+		}
+
+		// Check for Quotes
+		if c == '"' || c == '\'' {
+			// Check if escaped
+			is_escaped := false
+			if i > 0 && chars[i - 1] == '\\' {
+				// Check if it was a line continuation we SKIPPED?
+				// If we skipped it, i changed by >1.
+				// chars[i-1] is effectively correct in the RAW string.
+				is_escaped = true
+			}
+
+			if !is_escaped {
+				if in_quote == 0 {
+					in_quote = c
+				} else if in_quote == c {
+					in_quote = 0
+				}
+			}
+
+			strings.write_byte(&builder, c)
+			i += 1
+			continue
+		}
+
+		// Handle Newlines
+		if c == '\n' || c == '\r' {
+			if in_quote != 0 {
+				// Inside quote: Keep it (or replace with space? Shells allow newlines in quotes)
+				strings.write_byte(&builder, c)
+			} else {
+				// Outside quote: convert to space
+				strings.write_byte(&builder, ' ')
+			}
+			i += 1
+			continue
+		}
+
+		// Normal char
+		strings.write_byte(&builder, c)
+		i += 1
+	}
+
+	return strings.to_string(builder)
 }
 
 // Parse HTTP status code from response headers
