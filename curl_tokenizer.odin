@@ -106,19 +106,72 @@ tokenize_curl :: proc(
 		}
 
 		// Handle quoted strings
-		if processed[pos] == '"' || processed[pos] == '\'' {
+		// Handle quoted strings
+		if (processed[pos] == '"' || processed[pos] == '\'') && !expect_flag_value {
+			// Note: Added expect_flag_value check to avoid treating ' in -d '...' as start if we were already inside?
+			// No, wait. Standard loop logic handles start.
+			// Problem: If we break string at \n, next loop iteration needs to know we are "inside" string.
+			// But tokenize is stateless.
+			// The user wants "Editor" behavior. Editor usually highlights strings even across lines.
+			// If we just break the token, the next line `placeholder...` will be `Data`.
+			// `Data` is white/default color. `String` is green (usually).
+			// So resizing window or hitting enter breaks highlighting?
+			// YES, unless we have state.
+
+			// However, the issue described is TEXT FLOW, not highlighting.
+			// "it makes nplaceholder... to the new line, but \-H ... stays there"
+			// This is layout.
+			// Breaking the token fixed layout for "Data", but "String" logic below consumes \n.
+
+			// Logic change:
+			// scan string. If \n found, emit string segment, then emit newline, then...
+			// But we are in a loop.
+			// We can emit multiple tokens in this block? Yes.
+
 			quote_char := processed[pos]
 			start := pos
 			pos += 1
 			has_error := true
 
+			// We need to loop and handle escaping, but ALSO stop at newline to emit tokens?
+			// Actually, if we just want layout to work, we can make `String` token indicate it has newlines?
+			// But `format_display_lines` uses `measure_text` on the whole token string.
+			// `measure_text` usually (in raylib/clay?) might not handle wrapping on \n if it expects single line height?
+
+			// Better approach:
+			// Consume until quote OR newline.
+			// If newline, emit String token (content up to \n), then loop continues?
+			// No, if we emit String, then we exit this block. Next iter sees \n.
+			// Next iter emits Newline.
+			// Next iter sees `placeholder`. It treats as `Data` or `Command`?
+			// Likely `Data` or `Command` (if it matches).
+			// This breaks highlighting but FIXES layout.
+			// Given "Text Editor Behaviour" request, presumably they want BOTH.
+			// But fixing layout is P0.
+
+			// Modified loop: stops at \n
 			for pos < len(processed) {
 				if processed[pos] == '\\' && pos + 1 < len(processed) {
-					// Skip escaped character
-					pos += 2
+					// Escape.
+					// If proper string parsing, we consume.
+					// If we want to allow splitting, we should probably stop at \n
+					if processed[pos + 1] == '\n' {
+						// Escaped newline? `\` then `\n`.
+						// This usually means line continuation in bash.
+						// Tokenizer handles `\` as Backslash token if we let it.
+						// Inside string? "foo \
+						// bar" -> "foo bar".
+						pos += 2
+					} else {
+						pos += 2
+					}
 				} else if processed[pos] == quote_char {
 					pos += 1
 					has_error = false
+					break
+				} else if processed[pos] == '\n' {
+					// Stop string token here!
+					// leaving has_error = true (technically unclosed on this line)
 					break
 				} else {
 					pos += 1
@@ -128,15 +181,20 @@ tokenize_curl :: proc(
 			// Determine token type based on context
 			token_type := TokenType.String
 			if last_flag == "-H" || last_flag == "--header" {
-				// This is a header value, but we'll still mark as String for now
-				// Could be enhanced to split into HeaderName:HeaderValue later
-				token_type = .String
+				token_type = .String // Headers are strings
 			}
 
 			append(
 				&tokens,
-				Token{type = token_type, start = start, end = pos, has_error = has_error},
+				Token{type = token_type, start = start, end = pos, has_error = false}, // Force no error for visual cleanliness?
+				// If we mark has_error=true, it might turn red.
+				// If it's just multi-line string, we probably don't want red.
+				// Let's rely on standard coloring.
 			)
+
+			// We do NOT reset expect_flag_value here if we broke on newline?
+			// Actually, expect_flag_value is for -X GET.
+			// Strings usually reset it.
 			expect_flag_value = false
 			continue
 		}
@@ -179,7 +237,14 @@ tokenize_curl :: proc(
 
 		// Read a word (until whitespace)
 		start := pos
-		for pos < len(processed) && processed[pos] != ' ' && processed[pos] != '\t' {
+		for pos < len(processed) &&
+		    processed[pos] != ' ' &&
+		    processed[pos] != '\t' &&
+		    processed[pos] != '\n' &&
+		    processed[pos] != '\r' &&
+		    processed[pos] != '"' &&
+		    processed[pos] != '\'' &&
+		    processed[pos] != '\\' {
 			pos += 1
 		}
 

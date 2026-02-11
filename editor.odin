@@ -5,6 +5,27 @@ import "core:strings"
 import "core:unicode/utf8"
 import "vendor:raylib"
 
+// Platform specific modifier checks
+is_key_down_cmd :: proc() -> bool {
+	when ODIN_OS == .Darwin {
+		return raylib.IsKeyDown(.LEFT_SUPER) || raylib.IsKeyDown(.RIGHT_SUPER)
+	} else {
+		return raylib.IsKeyDown(.LEFT_CONTROL) || raylib.IsKeyDown(.RIGHT_CONTROL)
+	}
+}
+
+is_key_down_ctrl :: proc() -> bool {
+	return raylib.IsKeyDown(.LEFT_CONTROL) || raylib.IsKeyDown(.RIGHT_CONTROL)
+}
+
+is_key_down_alt :: proc() -> bool {
+	return raylib.IsKeyDown(.LEFT_ALT) || raylib.IsKeyDown(.RIGHT_ALT)
+}
+
+is_key_down_shift :: proc() -> bool {
+	return raylib.IsKeyDown(.LEFT_SHIFT) || raylib.IsKeyDown(.RIGHT_SHIFT)
+}
+
 // Editor Action Type for Undo/Redo
 EditActionType :: enum {
 	Insert,
@@ -510,23 +531,29 @@ editor_move_down :: proc(editor: ^Editor, select: bool, font_id: u16, font_size:
 }
 
 // Handle all input for the editor
+// Handle all input for the editor
 editor_handle_input :: proc(editor: ^Editor, width: f32, font_id: u16, font_size: u16) {
 	// Mods
-	ctrl := raylib.IsKeyDown(.LEFT_CONTROL) || raylib.IsKeyDown(.RIGHT_CONTROL)
-	shift := raylib.IsKeyDown(.LEFT_SHIFT) || raylib.IsKeyDown(.RIGHT_SHIFT)
+	ctrl := is_key_down_ctrl()
+	cmd := is_key_down_cmd() // Cmd on Mac, Ctrl on Windows
+	alt := is_key_down_alt()
+	shift := is_key_down_shift()
 
 	// Text Input
 	for {
 		char := raylib.GetCharPressed()
 		if char == 0 {break}
-		// Filter control characters if needed
-		if char >= 32 {
-			// Need to convert rune to string/bytes properly
-			// Or just use the byte we got if it's ascii, but GetCharPressed returns rune (i32)
 
-			// Simple way for now: append rune
-			// But our insert expects string.
-			// Let's make a temp string
+		// Filter control characters if shortcut is pressed
+		is_shortcut := false
+		when ODIN_OS == .Darwin {
+			is_shortcut = cmd || ctrl
+		} else {
+			is_shortcut = ctrl
+		}
+
+		if !is_shortcut && char >= 32 {
+			// Need to convert rune to string/bytes properly
 			runes: [1]rune = {char}
 			s := utf8.runes_to_string(runes[:], context.temp_allocator)
 			editor_insert(editor, s)
@@ -534,49 +561,76 @@ editor_handle_input :: proc(editor: ^Editor, width: f32, font_id: u16, font_size
 	}
 
 	// Key Navigation
-	if raylib.IsKeyPressed(.LEFT) || raylib.IsKeyPressedRepeat(.LEFT) {
-		editor_move_left(editor, shift, ctrl) // Ctrl = word jump
-	}
-	if raylib.IsKeyPressed(.RIGHT) || raylib.IsKeyPressedRepeat(.RIGHT) {
-		editor_move_right(editor, shift, ctrl)
-	}
-	if raylib.IsKeyPressed(.UP) || raylib.IsKeyPressedRepeat(.UP) {
-		editor_move_up(editor, shift, font_id, font_size, width)
-	}
-	if raylib.IsKeyPressed(.DOWN) || raylib.IsKeyPressedRepeat(.DOWN) {
-		editor_move_down(editor, shift, font_id, font_size, width)
-	}
+	word_jump := false
 
-	// Home/End
-	if raylib.IsKeyPressed(.HOME) {
-		if shift {
-			if editor.selection_anchor == nil {editor.selection_anchor = editor.cursor}
-		} else {
-			editor.selection_anchor = nil
+	when ODIN_OS == .Darwin {
+		// Mac Navigation
+		word_jump = alt
+
+		if raylib.IsKeyPressed(.LEFT) || raylib.IsKeyPressedRepeat(.LEFT) {
+			if cmd {
+				// Cmd+Left = Line Start
+				editor_move_line_start(editor, shift)
+			} else {
+				editor_move_left(editor, shift, word_jump)
+			}
+		}
+		if raylib.IsKeyPressed(.RIGHT) || raylib.IsKeyPressedRepeat(.RIGHT) {
+			if cmd {
+				// Cmd+Right = Line End
+				editor_move_line_end(editor, shift)
+			} else {
+				editor_move_right(editor, shift, word_jump)
+			}
+		}
+		if raylib.IsKeyPressed(.UP) || raylib.IsKeyPressedRepeat(.UP) {
+			if cmd {
+				// Cmd+Up = Doc Start
+				editor_move_doc_start(editor, shift)
+			} else {
+				editor_move_up(editor, shift, font_id, font_size, width)
+			}
+		}
+		if raylib.IsKeyPressed(.DOWN) || raylib.IsKeyPressedRepeat(.DOWN) {
+			if cmd {
+				// Cmd+Down = Doc End
+				editor_move_doc_end(editor, shift)
+			} else {
+				editor_move_down(editor, shift, font_id, font_size, width)
+			}
+		}
+	} else {
+		// Windows/Linux Navigation
+		word_jump = ctrl
+
+		if raylib.IsKeyPressed(.LEFT) || raylib.IsKeyPressedRepeat(.LEFT) {
+			editor_move_left(editor, shift, word_jump)
+		}
+		if raylib.IsKeyPressed(.RIGHT) || raylib.IsKeyPressedRepeat(.RIGHT) {
+			editor_move_right(editor, shift, word_jump)
+		}
+		if raylib.IsKeyPressed(.UP) || raylib.IsKeyPressedRepeat(.UP) {
+			editor_move_up(editor, shift, font_id, font_size, width)
+		}
+		if raylib.IsKeyPressed(.DOWN) || raylib.IsKeyPressedRepeat(.DOWN) {
+			editor_move_down(editor, shift, font_id, font_size, width)
 		}
 
-		if ctrl {
-			editor.cursor = 0
-		} else {
-			// Line start
-			// Basic line start logic (for wrapped lines it's harder, let's just do logical line start)
-			editor.cursor = get_line_start(editor, editor.cursor)
+		// Home/End
+		if raylib.IsKeyPressed(.HOME) {
+			if ctrl {
+				editor_move_doc_start(editor, shift)
+			} else {
+				editor_move_line_start(editor, shift)
+			}
 		}
-		editor.preferred_col = -1
-	}
-	if raylib.IsKeyPressed(.END) {
-		if shift {
-			if editor.selection_anchor == nil {editor.selection_anchor = editor.cursor}
-		} else {
-			editor.selection_anchor = nil
+		if raylib.IsKeyPressed(.END) {
+			if ctrl {
+				editor_move_doc_end(editor, shift)
+			} else {
+				editor_move_line_end(editor, shift)
+			}
 		}
-
-		if ctrl {
-			editor.cursor = len(editor.text)
-		} else {
-			editor.cursor = get_line_end(editor, editor.cursor)
-		}
-		editor.preferred_col = -1
 	}
 
 	// Editing Keys
@@ -594,7 +648,8 @@ editor_handle_input :: proc(editor: ^Editor, width: f32, font_id: u16, font_size
 	}
 
 	// Copy/Paste/Cut/Undo/Redo
-	if ctrl {
+	// Copy/Paste/Cut/Undo/Redo
+	if cmd {
 		if raylib.IsKeyPressed(.C) {
 			start, end, has := get_selection_range(editor)
 			if has {
@@ -623,14 +678,62 @@ editor_handle_input :: proc(editor: ^Editor, width: f32, font_id: u16, font_size
 			editor.cursor = len(editor.text)
 		}
 		if raylib.IsKeyPressed(.Z) {
-			if shift { 	// Ctrl+Shift+Z = Redo? Or Ctrl+Y
+			if shift { 	// Ctrl+Shift+Z = Redo
 				editor_redo(editor)
 			} else {
 				editor_undo(editor)
 			}
 		}
-		if raylib.IsKeyPressed(.Y) {
-			editor_redo(editor)
+
+		// Windows specific Y for redo
+		when ODIN_OS != .Darwin {
+			if raylib.IsKeyPressed(.Y) {
+				editor_redo(editor)
+			}
 		}
 	}
+}
+
+// Helpers for navigation actions to reduce duplication
+
+editor_move_line_start :: proc(editor: ^Editor, select: bool) {
+	if select {
+		if editor.selection_anchor == nil {editor.selection_anchor = editor.cursor}
+	} else {
+		editor.selection_anchor = nil
+	}
+
+	editor.cursor = get_line_start(editor, editor.cursor)
+	editor.preferred_col = -1
+}
+
+editor_move_line_end :: proc(editor: ^Editor, select: bool) {
+	if select {
+		if editor.selection_anchor == nil {editor.selection_anchor = editor.cursor}
+	} else {
+		editor.selection_anchor = nil
+	}
+
+	editor.cursor = get_line_end(editor, editor.cursor)
+	editor.preferred_col = -1
+}
+
+editor_move_doc_start :: proc(editor: ^Editor, select: bool) {
+	if select {
+		if editor.selection_anchor == nil {editor.selection_anchor = editor.cursor}
+	} else {
+		editor.selection_anchor = nil
+	}
+	editor.cursor = 0
+	editor.preferred_col = -1
+}
+
+editor_move_doc_end :: proc(editor: ^Editor, select: bool) {
+	if select {
+		if editor.selection_anchor == nil {editor.selection_anchor = editor.cursor}
+	} else {
+		editor.selection_anchor = nil
+	}
+	editor.cursor = len(editor.text)
+	editor.preferred_col = -1
 }

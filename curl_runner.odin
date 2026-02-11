@@ -39,10 +39,10 @@ run_curl :: proc(command: string) -> CurlResult {
 
 	if !strings.contains(sanitized_command, " -i") &&
 	   !strings.contains(sanitized_command, " -i ") {
-		modified_cmd = strings.concatenate({sanitized_command, " -i -s"})
+		modified_cmd = strings.concatenate({sanitized_command, " -i -sS"})
 		needs_free = true
 	} else if !strings.contains(sanitized_command, " -s") {
-		modified_cmd = strings.concatenate({sanitized_command, " -s"})
+		modified_cmd = strings.concatenate({sanitized_command, " -sS"})
 		needs_free = true
 	}
 	defer if needs_free {
