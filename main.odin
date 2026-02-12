@@ -538,19 +538,23 @@ sidebar_component :: proc() {
 					},
 					) {
 						// Command name or edit input
-						if clay.UI()(
-						{
-							id = clay.ID("CmdName", cmd.id),
-							layout = {
-								sizing = {
-									width = clay.SizingGrow({}),
-									height = clay.SizingGrow({}),
+						if is_editing {
+							if clay.UI()(
+							{
+								id = clay.ID("CmdName", cmd.id),
+								layout = {
+									sizing = {
+										width = clay.SizingGrow({}),
+										height = clay.SizingGrow({}),
+									},
+									childAlignment = {y = .Center},
 								},
-								childAlignment = {y = .Center},
+								clip = {
+									horizontal = true,
+									childOffset = {-app_state.name_input_scroll_x, 0},
+								},
 							},
-						},
-						) {
-							if is_editing {
+							) {
 								// Show editable name input
 								name_text := buffer_to_string(
 									app_state.name_input[:],
@@ -579,7 +583,23 @@ sidebar_component :: proc() {
 										),
 									)
 								}
-							} else {
+							}
+						} else {
+							if clay.UI()(
+							{
+								id = clay.ID("CmdName", cmd.id),
+								layout = {
+									sizing = {
+										width = clay.SizingGrow({}),
+										height = clay.SizingGrow({}),
+									},
+									childAlignment = {y = .Center},
+								},
+								// limit layout but don't clip tightly or use empty clip?
+								// Actually, let's use clip to prevent overflow but no offset
+								clip = {horizontal = true},
+							},
+							) {
 								clay.TextDynamic(
 									cmd.name,
 									clay.TextConfig(
@@ -1419,10 +1439,9 @@ calculate_wrapped_position :: proc(
 	// If not found (e.g. at very end), return end of last line
 	if len(display_lines) > 0 {
 		// Actually current_x/y would be at start of next line loop if we exited.
-		// Let's reset and find last line end.
-
 		last_line := display_lines[len(display_lines) - 1]
-		end_x := f32(last_line.indent) * get_glyph_width(font, ' ')
+		end_x: f32 = f32(last_line.indent) * get_glyph_width(font, ' ')
+		// Add width of all tokens
 		for token in last_line.tokens {
 			token_text := processed_text[token.start:token.end]
 			for char in token_text {
@@ -1433,6 +1452,77 @@ calculate_wrapped_position :: proc(
 	}
 
 	return 0, 0
+}
+
+// Calculate linear position (x) for a given index in single-line text
+calculate_linear_position :: proc(
+	text: []u8,
+	target_index: int,
+	font_id: u16,
+	font_size: u16,
+) -> f32 {
+	if target_index <= 0 {return 0}
+
+	font := raylib_fonts[font_id].font
+
+	// Convert bytes to string for iteration (assuming UTF-8 safe or similar)
+	text_str := string(text)
+
+	// If target index is beyond length, clamp it
+	actual_target := min(target_index, len(text))
+
+	current_x: f32 = 0
+
+	// Need to iterate glyphs up to target index
+	// We iterate bytes but advanced by glyph width
+	// This simple loop assumes 1 byte chars for width lookup or similar,
+	// typically we iterate over the string safely.
+
+	// Using a specific iteration:
+	if actual_target > 0 {
+		str_slice := text_str[:actual_target]
+		for char in str_slice {
+			current_x += get_glyph_width(font, u8(char))
+		}
+	}
+
+	return current_x
+}
+
+// Calculate cursor index from click X coordinate for single-line text
+calculate_linear_cursor_from_click :: proc(
+	text: []u8,
+	length: int,
+	click_x: f32,
+	font_id: u16,
+	font_size: u16,
+) -> int {
+	if length <= 0 {return 0}
+
+	font := raylib_fonts[font_id].font
+	text_str := string(text[:length])
+
+	current_x: f32 = 0
+
+	for i := 0; i < len(text_str); i += 1 {
+		char := text_str[i]
+		char_width := get_glyph_width(font, u8(char))
+
+		// If click is within the left half of this char, return this index (cursor before char)
+		// If click is within right half, continue (effectively checking next boundary)
+		// Actually standard behavior: if x < center of char, return start.
+
+		center_x := current_x + (char_width / 2)
+
+		if click_x < center_x {
+			return i
+		}
+
+		current_x += char_width
+	}
+
+	// If we are here, we clicked past the center of the last char
+	return length
 }
 
 // Draw blinking cursor for focused input
@@ -1448,6 +1538,7 @@ draw_text_cursor :: proc() {
 	font_id: u16
 	padding_left: f32 = 0
 	padding_top: f32 = 0
+	scroll_offset_x: f32 = 0
 	sel_anchor: Maybe(int)
 
 	switch focused_input {
@@ -1481,7 +1572,12 @@ draw_text_cursor :: proc() {
 		text_len = app_state.name_input_len
 		font_id = FONT_ID_BODY_18
 		padding_left = 0
+
+		// improved vertical centering logic
+		// We'll calculate it later based on bounds
 		padding_top = 0
+
+		scroll_offset_x = app_state.name_input_scroll_x
 		sel_anchor = app_state.name_sel_anchor
 	case .None:
 		return
@@ -1493,6 +1589,12 @@ draw_text_cursor :: proc() {
 
 	bounds := bounds_data.boundingBox
 	cursor_height: f32 = 18 // Match font size
+
+	// For NameInput, center vertically
+	if focused_input == .NameInput {
+		padding_top = (bounds.height - cursor_height) / 2
+	}
+
 
 	// Determine available width for text
 	container_width := bounds.width - (padding_left * 2)
@@ -1569,13 +1671,26 @@ draw_text_cursor :: proc() {
 	if app_state.cursor_blink_timer > 0.5 {return}
 
 	// Calculate cursor X position based on text before cursor
-	rel_x, rel_y := calculate_wrapped_position(
-		text_buffer[:text_len],
-		cursor_pos,
-		container_width,
-		font_id,
-		18,
-	)
+	rel_x: f32 = 0
+	rel_y: f32 = 0
+
+	if focused_input == .NameInput {
+		rel_x = calculate_linear_position(text_buffer[:text_len], cursor_pos, font_id, 18)
+		// rel_y remains 0 for linear single line (centered via padding_top)
+	} else {
+		rx, ry := calculate_wrapped_position(
+			text_buffer[:text_len],
+			cursor_pos,
+			container_width,
+			font_id,
+			18,
+		)
+		rel_x = rx
+		rel_y = ry
+	}
+
+	// Apply scroll offset
+	rel_x -= scroll_offset_x
 
 	cursor_x := bounds.x + padding_left + rel_x
 	cursor_y := bounds.y + padding_top + rel_y
@@ -1724,13 +1839,55 @@ handle_interactions :: proc() {
 			}
 		}
 
+		// Check for clicks on the command name (when editing)
+		if editing_id, ok := app_state.editing_id.?; ok && editing_id == cmd.id {
+			if clay.PointerOver(clay.ID("CmdName", cmd.id)) {
+				bounds_data := clay.GetElementData(clay.ID("CmdName", cmd.id))
+				if bounds_data.found {
+					mouse_x := raylib.GetMousePosition().x
+					mouse_y := raylib.GetMousePosition().y
+
+					// Adjust click by scroll offset
+					click_x := mouse_x - bounds_data.boundingBox.x + app_state.name_input_scroll_x
+
+					// Use linear calculation
+					new_cursor := calculate_linear_cursor_from_click(
+						app_state.name_input[:],
+						app_state.name_input_len,
+						click_x,
+						FONT_ID_BODY_18,
+						18,
+					)
+
+					if raylib.IsMouseButtonPressed(.LEFT) {
+						app_state.name_cursor = new_cursor
+						app_state.name_sel_anchor = new_cursor
+						focused_input = .NameInput // Ensure focus
+						app_state.cursor_blink_timer = 0 // Reset blink timer
+					} else if raylib.IsMouseButtonDown(.LEFT) {
+						// Drag selection
+						app_state.name_cursor = new_cursor
+					}
+				}
+			}
+		}
+
 		// Command item click (select)
 		if clay.PointerOver(clay.ID("CmdItem", cmd.id)) {
 			if raylib.IsMouseButtonPressed(.LEFT) {
-				// Only select if not clicking buttons
+				// Only select if not clicking buttons or editing name
+				is_editing := false
+				if eid, ok := app_state.editing_id.?; ok && eid == cmd.id {
+					is_editing = true
+				}
+
+				clicked_name_while_editing :=
+					is_editing && clay.PointerOver(clay.ID("CmdName", cmd.id))
+
 				if !clay.PointerOver(clay.ID("EditBtn", cmd.id)) &&
 				   !clay.PointerOver(clay.ID("DelBtn", cmd.id)) &&
-				   !clay.PointerOver(clay.ID("SaveNameBtn", cmd.id)) {
+				   !clay.PointerOver(clay.ID("SaveNameBtn", cmd.id)) &&
+				   !clicked_name_while_editing {
 					load_command(&cmd)
 				}
 			}
@@ -1776,6 +1933,44 @@ handle_interactions :: proc() {
 			&app_state.name_cursor,
 			&app_state.name_sel_anchor,
 		)
+
+		// Calculate scroll offset to keep cursor in view
+		// Get element width (approximate or look up)
+		// We'll assume the input width is constrained by the sidebar minus buttons
+		// Sidebar is 280, padding 12*2, item padding 10*2 = 236 available
+		// Edit button is 50, Save button is 50.
+		// If editing, we have Save button (50) + gap.
+		// Let's rely on Clay getting the element data if possible, or estimate.
+
+		input_width: f32 = 0
+		if editing_id, ok := app_state.editing_id.?; ok {
+			bounds_data := clay.GetElementData(clay.ID("CmdName", editing_id))
+			if bounds_data.found {
+				input_width = bounds_data.boundingBox.width
+			}
+		}
+
+		if input_width > 0 {
+			// Calculate text width before cursor
+			cursor_x := calculate_text_width(
+				app_state.name_input[:],
+				app_state.name_cursor,
+				FONT_ID_BODY_18,
+			)
+
+			// Add some padding/margin for cursor visibility
+			margin: f32 = 10
+
+			// If cursor is to the right of the visible area
+			if cursor_x > app_state.name_input_scroll_x + input_width - margin {
+				app_state.name_input_scroll_x = cursor_x - input_width + margin
+			}
+
+			// If cursor is to the left of the visible area
+			if cursor_x < app_state.name_input_scroll_x + margin {
+				app_state.name_input_scroll_x = max(0, cursor_x - margin)
+			}
+		}
 
 		// Enter to save
 		if raylib.IsKeyPressed(.ENTER) {
@@ -1906,6 +2101,10 @@ start_editing_command :: proc(cmd: ^SavedCommand) {
 	cmd_bytes := transmute([]u8)cmd.name
 	copy(app_state.name_input[:], cmd_bytes)
 	app_state.name_input_len = len(cmd.name)
+
+	app_state.name_cursor = app_state.name_input_len
+	app_state.name_sel_anchor = nil
+	app_state.name_input_scroll_x = 0
 }
 
 // Save the currently editing command
@@ -1973,6 +2172,17 @@ save_current_command :: proc() {
 	if len(app_state.curl_editor.text) == 0 {return}
 
 	command := editor_get_text(&app_state.curl_editor)
+
+	// If a command is selected, update it instead of creating a new one
+	if selected_id, ok := app_state.selected_id.?; ok {
+		// Find the command to get its current name
+		for cmd in app_state.commands {
+			if cmd.id == selected_id {
+				update_command(&app_state, selected_id, cmd.name, command)
+				return
+			}
+		}
+	}
 
 	// Use first 10 characters of command as default name (or less if command is shorter)
 	name_len := min(len(command), 10)

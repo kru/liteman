@@ -32,6 +32,7 @@ AppState :: struct {
 	name_input_len:                   int,
 	name_cursor:                      int,
 	name_sel_anchor:                  Maybe(int), // Selection anchor (nil = no selection)
+	name_input_scroll_x:              f32, // Horizontal scroll offset for name input
 
 	// Cursor blink timer
 	cursor_blink_timer:               f32,
