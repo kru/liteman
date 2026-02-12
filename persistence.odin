@@ -1,6 +1,7 @@
 package main
 
 import "core:encoding/json"
+import "core:fmt"
 import "core:os"
 import "core:strings"
 
@@ -8,26 +9,90 @@ COMMANDS_FILE :: "commands.json"
 
 // JSON-serializable version of SavedCommand
 SavedCommandJson :: struct {
-	id:      u32,
-	name:    string,
-	command: string,
+	id:       u32,
+	type:     CommandType,
+	name:     string,
+	command:  string,
+	children: [dynamic]SavedCommandJson,
+	expanded: bool,
+}
+
+// Convert core struct to JSON struct (recursive)
+to_json_struct :: proc(cmd: SavedCommand) -> SavedCommandJson {
+	json_cmd := SavedCommandJson {
+		id       = cmd.id,
+		type     = cmd.type,
+		name     = cmd.name,
+		command  = cmd.command,
+		expanded = cmd.expanded,
+	}
+
+	if len(cmd.children) > 0 {
+		json_cmd.children = make([dynamic]SavedCommandJson, len(cmd.children))
+		for child, i in cmd.children {
+			json_cmd.children[i] = to_json_struct(child)
+		}
+	}
+
+	return json_cmd
+}
+
+// Convert JSON struct to core struct (recursive)
+from_json_struct :: proc(jcmd: SavedCommandJson) -> SavedCommand {
+	cmd := SavedCommand {
+		id       = jcmd.id,
+		type     = jcmd.type,
+		name     = strings.clone(jcmd.name),
+		command  = strings.clone(jcmd.command),
+		expanded = jcmd.expanded,
+	}
+
+	if len(jcmd.children) > 0 {
+		cmd.children = make([dynamic]SavedCommand)
+		for child in jcmd.children {
+			append(&cmd.children, from_json_struct(child))
+		}
+	}
+
+	return cmd
+}
+
+// Helper to free JSON struct
+destroy_json_struct :: proc(jcmd: SavedCommandJson) {
+	// Strings in JSON struct might be slices into the original data if using strict unmarshal,
+	// but here we are constructing them.
+	// Since we use the default allocator for `to_json_struct`'s dynamic array, we should free it.
+	// But strings are just copies/refs.
+	// Actually `json.marshal` handles the allocation for the output string.
+	// `to_json_struct` allocates the dynamic array.
+	for child in jcmd.children {
+		destroy_json_struct(child)
+	}
+	delete(jcmd.children)
 }
 
 // Save commands to JSON file
 save_commands :: proc(commands: []SavedCommand) -> bool {
 	json_commands := make([dynamic]SavedCommandJson, len(commands))
-	defer delete(json_commands)
-
-	for cmd, i in commands {
-		json_commands[i] = SavedCommandJson {
-			id      = cmd.id,
-			name    = cmd.name,
-			command = cmd.command,
+	defer {
+		for cmd in json_commands {
+			destroy_json_struct(cmd)
 		}
+		delete(json_commands)
 	}
 
-	data, err := json.marshal(json_commands[:])
+	for cmd, i in commands {
+		json_commands[i] = to_json_struct(cmd)
+	}
+
+	// Marshal with pretty printing (indentation)
+	opt := json.Marshal_Options {
+		pretty = true,
+	}
+
+	data, err := json.marshal(json_commands[:], opt)
 	if err != nil {
+		fmt.println("Error marshalling commands:", err)
 		return false
 	}
 	defer delete(data)
@@ -46,43 +111,62 @@ load_commands :: proc() -> ([dynamic]SavedCommand, bool) {
 	}
 	defer delete(data)
 
+	// Check if file is empty
+	if len(data) == 0 {
+		return commands, true
+	}
+
 	json_commands: [dynamic]SavedCommandJson
-	defer delete(json_commands)
+	defer {
+		// We need to free the JSON structs, but strings might be views into `data`?
+		// Odin's json.unmarshal typically allocates strings if they are cloned.
+		// If we use the default allocator, they are allocated.
+		delete(json_commands)
+	}
 
 	err := json.unmarshal(data, &json_commands)
 	if err != nil {
+		fmt.println("Error unmarshalling commands:", err)
+		// Fallback for empty or corrupt file - return empty list logic handled above
+		// If it fails, maybe legacy format?
+		// For now we assume fresh start as requested.
 		return commands, false
 	}
 
 	for jcmd in json_commands {
-		append(
-			&commands,
-			SavedCommand {
-				id = jcmd.id,
-				name = strings.clone(jcmd.name),
-				command = strings.clone(jcmd.command),
-			},
-		)
+		append(&commands, from_json_struct(jcmd))
 	}
 
 	return commands, true
 }
 
-// Get the next available ID based on existing commands
-get_next_id :: proc(commands: []SavedCommand) -> u32 {
+// Get the max ID recursively
+get_max_id_recursive :: proc(commands: []SavedCommand) -> u32 {
 	max_id: u32 = 0
 	for cmd in commands {
 		if cmd.id > max_id {
 			max_id = cmd.id
 		}
+		if len(cmd.children) > 0 {
+			child_max := get_max_id_recursive(cmd.children[:])
+			if child_max > max_id {
+				max_id = child_max
+			}
+		}
 	}
-	return max_id + 1
+	return max_id
 }
 
-// Add a new command
-add_command :: proc(state: ^AppState, name: string, command: string) {
+// Get the next available ID
+get_next_id :: proc(commands: []SavedCommand) -> u32 {
+	return get_max_id_recursive(commands) + 1
+}
+
+// Add a new command to root
+add_command_root :: proc(state: ^AppState, name: string, command: string) {
 	new_cmd := SavedCommand {
 		id      = state.next_id,
+		type    = .Request,
 		name    = strings.clone(name),
 		command = strings.clone(command),
 	}
@@ -91,30 +175,88 @@ add_command :: proc(state: ^AppState, name: string, command: string) {
 	save_commands(state.commands[:])
 }
 
-// Delete a command by ID
-delete_command :: proc(state: ^AppState, id: u32) {
-	for cmd, i in state.commands {
+// Add a new folder to root
+add_folder_root :: proc(state: ^AppState, name: string) {
+	new_cmd := SavedCommand {
+		id       = state.next_id,
+		type     = .Folder,
+		name     = strings.clone(name),
+		children = make([dynamic]SavedCommand),
+		expanded = true,
+	}
+	append(&state.commands, new_cmd)
+	state.next_id += 1
+	save_commands(state.commands[:])
+}
+
+// Recursive delete helper
+delete_command_recursive :: proc(commands: ^[dynamic]SavedCommand, id: u32) -> bool {
+	for cmd, i in commands {
 		if cmd.id == id {
+			// Found it, free memory
 			delete(cmd.name)
 			delete(cmd.command)
-			ordered_remove(&state.commands, i)
-			save_commands(state.commands[:])
-			return
+			// Recursively free children
+			free_children_recursive(cmd)
+			ordered_remove(commands, i)
+			return true
 		}
+
+		// Search children
+		if len(cmd.children) > 0 {
+			if delete_command_recursive(&commands[i].children, id) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+free_children_recursive :: proc(cmd: SavedCommand) {
+	for child in cmd.children {
+		delete(child.name)
+		delete(child.command)
+		free_children_recursive(child)
+	}
+	delete(cmd.children)
+}
+
+// Delete a command by ID (searches recursively)
+delete_command :: proc(state: ^AppState, id: u32) {
+	if delete_command_recursive(&state.commands, id) {
+		save_commands(state.commands[:])
 	}
 }
 
-// Update a command
-update_command :: proc(state: ^AppState, id: u32, name: string, command: string) {
-	for &cmd in state.commands {
+// Recursive update helper
+update_command_recursive :: proc(
+	commands: ^[dynamic]SavedCommand,
+	id: u32,
+	name: string,
+	command: string,
+) -> bool {
+	for &cmd in commands {
 		if cmd.id == id {
 			delete(cmd.name)
 			delete(cmd.command)
 			cmd.name = strings.clone(name)
 			cmd.command = strings.clone(command)
-			save_commands(state.commands[:])
-			return
+			return true
 		}
+
+		if len(cmd.children) > 0 {
+			if update_command_recursive(&cmd.children, id, name, command) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Update a command (searches recursively)
+update_command :: proc(state: ^AppState, id: u32, name: string, command: string) {
+	if update_command_recursive(&state.commands, id, name, command) {
+		save_commands(state.commands[:])
 	}
 }
 
@@ -128,3 +270,29 @@ load_state_commands :: proc(state: ^AppState) -> bool {
 	state.next_id = get_next_id(commands[:])
 	return true
 }
+
+// Find a command by ID (recursive)
+find_command_recursive :: proc(commands: []SavedCommand, id: u32) -> ^SavedCommand {
+	for &cmd in commands {
+		if cmd.id == id {
+			return &cmd
+		}
+		if len(cmd.children) > 0 {
+			found := find_command_recursive(cmd.children[:], id)
+			if found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+// Helper to find command in state
+find_command :: proc(state: ^AppState, id: u32) -> ^SavedCommand {
+	return find_command_recursive(state.commands[:], id)
+}
+
+// Helper to move a command to a new parent (root if parent_id is 0)
+// This is complex: we need to find the command, clone it, delete it from old location, insert into new.
+// Or just move the struct if we can get a pointer to the list containing it.
+// For now, let's defer implementation of "Move" until UI is ready.

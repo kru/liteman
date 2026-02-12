@@ -22,6 +22,8 @@ COLOR_SUCCESS :: clay.Color{80, 180, 120, 255}
 COLOR_WARNING :: clay.Color{220, 180, 80, 255}
 COLOR_ERROR :: clay.Color{220, 90, 90, 255}
 COLOR_ITEM_HOVER :: clay.Color{55, 58, 65, 255}
+COLOR_PANEL_HOVER :: clay.Color{60, 62, 68, 255}
+
 
 // Syntax highlighting colors for curl commands
 COLOR_SYN_COMMAND :: clay.Color{120, 120, 130, 255} // dim gray for "curl"
@@ -376,26 +378,35 @@ buffer_to_string :: proc(buffer: []u8, length: int) -> string {
 	return string(buffer[:length])
 }
 
+// Filter commands by search text (recursive helper)
+search_recursive :: proc(
+	commands: []SavedCommand,
+	search_lower: string,
+	result: ^[dynamic]^SavedCommand,
+) {
+	for &cmd in commands {
+		cmd_name_lower := strings.to_lower(cmd.name, context.temp_allocator)
+		if strings.contains(cmd_name_lower, search_lower) {
+			append(result, &cmd)
+		}
+
+		if len(cmd.children) > 0 {
+			search_recursive(cmd.children[:], search_lower, result)
+		}
+	}
+}
+
 // Filter commands by search text
 get_filtered_commands :: proc() -> [dynamic]^SavedCommand {
 	result := make([dynamic]^SavedCommand, context.temp_allocator)
 	search := buffer_to_string(app_state.search_text[:], app_state.search_len)
 
 	if len(search) == 0 {
-		for &cmd in app_state.commands {
-			append(&result, &cmd)
-		}
-		return result
+		return result // Should not be used when search is empty ideally
 	}
 
 	search_lower := strings.to_lower(search, context.temp_allocator)
-
-	for &cmd in app_state.commands {
-		cmd_name_lower := strings.to_lower(cmd.name, context.temp_allocator)
-		if strings.contains(cmd_name_lower, search_lower) {
-			append(&result, &cmd)
-		}
-	}
+	search_recursive(app_state.commands[:], search_lower, &result)
 
 	return result
 }
@@ -437,6 +448,287 @@ get_token_color :: proc(token_type: TokenType, has_error: bool) -> clay.Color {
 	return COLOR_TEXT
 }
 
+COLOR_FOLDER :: clay.Color{60, 62, 68, 255}
+
+// Recursive helper to render command nodes
+render_command_node :: proc(commands: ^[dynamic]SavedCommand, cmd_idx: int, depth: int) {
+	cmd := &commands[cmd_idx]
+	is_selected := app_state.selected_id == cmd.id
+	is_editing := app_state.editing_id == cmd.id
+
+	// Indentation
+	padding_left: u16 = 10 + (u16(depth) * 16)
+
+	if cmd.type == .Folder {
+		// Folder rendering
+		bg_color := is_selected ? COLOR_ACCENT : COLOR_FOLDER
+		if moving_id, ok := app_state.moving_cmd_id.?; ok {
+			if moving_id != cmd.id && clay.PointerOver(clay.ID("CmdItem", cmd.id)) {
+				bg_color = COLOR_MOVE_HOVER
+			}
+		}
+
+		if clay.UI()(
+		{
+			id = clay.ID("CmdItem", cmd.id),
+			layout = {
+				sizing = {width = clay.SizingGrow({}), height = clay.SizingFixed(36)},
+				padding = {padding_left, 10, 8, 8},
+				childAlignment = {y = .Center},
+				childGap = 8,
+			},
+			backgroundColor = bg_color,
+			cornerRadius = {4, 4, 4, 4},
+		},
+		) {
+			// Expand/Collapse toggle (caret)
+			caret_text := cmd.expanded ? "v" : ">"
+			if clay.UI()(
+			{
+				id = clay.ID("FolderToggle", cmd.id),
+				layout = {
+					sizing = {width = clay.SizingFixed(16), height = clay.SizingFixed(16)},
+					childAlignment = {x = .Center, y = .Center},
+				},
+			},
+			) {
+				clay.TextDynamic(
+					caret_text,
+					clay.TextConfig(
+						{textColor = COLOR_TEXT, fontSize = 14, fontId = FONT_ID_BODY_14},
+					),
+				)
+			}
+
+			// Folder Name
+			if is_editing {
+				if clay.UI()(
+				{
+					id = clay.ID("CmdName", cmd.id),
+					layout = {
+						sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
+						childAlignment = {y = .Center},
+					},
+					clip = {horizontal = true, childOffset = {-app_state.name_input_scroll_x, 0}},
+				},
+				) {
+					name_text := buffer_to_string(
+						app_state.name_input[:],
+						app_state.name_input_len,
+					)
+					if app_state.name_input_len > 0 {
+						clay.TextDynamic(
+							name_text,
+							clay.TextConfig(
+								{textColor = COLOR_TEXT, fontSize = 18, fontId = FONT_ID_BODY_18},
+							),
+						)
+					} else {
+						clay.Text(
+							"Folder name...",
+							clay.TextConfig(
+								{
+									textColor = COLOR_TEXT_DIM,
+									fontSize = 18,
+									fontId = FONT_ID_BODY_18,
+								},
+							),
+						)
+					}
+				}
+			} else {
+				// Render name
+				clay.TextDynamic(
+					cmd.name,
+					clay.TextConfig(
+						{textColor = COLOR_TEXT, fontSize = 18, fontId = FONT_ID_BODY_18},
+					),
+				)
+			}
+
+			// Edit/Delete buttons (same as commands)
+			if is_selected && !is_editing {
+				render_command_actions(cmd)
+			}
+
+			// Save/Move actions
+			if is_editing {
+				render_save_action(cmd)
+			}
+
+			// Move Mode: Highlight as drop target
+			if moving_id, ok := app_state.moving_cmd_id.?; ok && !is_editing {
+				// Don't highlight self or descendants (simplified check: just self for now)
+				if moving_id != cmd.id {
+					// Check if mouse over to highlight
+					if clay.PointerOver(clay.ID("CmdItem", cmd.id)) {
+						// Highlight border or bg to indicate drop target
+						// We can't easily draw a border *around* the existing element here without changing layout...
+						// But we can change background color if we passed it in.
+						// The background color is set in the clay.UI call above.
+						// We'd need to change logic above.
+					}
+				}
+			}
+		}
+
+
+		// Render children if expanded
+		if cmd.expanded {
+			for child_idx := 0; child_idx < len(cmd.children); child_idx += 1 {
+				render_command_node(&cmd.children, child_idx, depth + 1)
+			}
+		}
+
+	} else {
+		// Request rendering
+		item_bg := is_selected ? COLOR_ACCENT : COLOR_ITEM_HOVER
+
+		if clay.UI()(
+		{
+			id = clay.ID("CmdItem", cmd.id),
+			layout = {
+				sizing = {width = clay.SizingGrow({}), height = clay.SizingFixed(44)},
+				padding = {padding_left, 10, 8, 8},
+				childAlignment = {y = .Center},
+			},
+			backgroundColor = item_bg,
+			cornerRadius = {4, 4, 4, 4},
+		},
+		) {
+			// Command name or duplicate of editing logic
+			if is_editing {
+				if clay.UI()(
+				{
+					id = clay.ID("CmdName", cmd.id),
+					layout = {
+						sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
+						childAlignment = {y = .Center},
+					},
+					clip = {horizontal = true, childOffset = {-app_state.name_input_scroll_x, 0}},
+				},
+				) {
+					name_text := buffer_to_string(
+						app_state.name_input[:],
+						app_state.name_input_len,
+					)
+					if app_state.name_input_len > 0 {
+						clay.TextDynamic(
+							name_text,
+							clay.TextConfig(
+								{textColor = COLOR_TEXT, fontSize = 18, fontId = FONT_ID_BODY_18},
+							),
+						)
+					} else {
+						clay.Text(
+							"Enter name...",
+							clay.TextConfig(
+								{
+									textColor = COLOR_TEXT_DIM,
+									fontSize = 18,
+									fontId = FONT_ID_BODY_18,
+								},
+							),
+						)
+					}
+				}
+			} else {
+				if clay.UI()(
+				{
+					id = clay.ID("CmdName", cmd.id),
+					layout = {
+						sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
+						childAlignment = {y = .Center},
+					},
+					clip = {horizontal = true},
+				},
+				) {
+					clay.TextDynamic(
+						cmd.name,
+						clay.TextConfig(
+							{textColor = COLOR_TEXT, fontSize = 18, fontId = FONT_ID_BODY_18},
+						),
+					)
+				}
+			}
+
+			// Show buttons when selected
+			if is_selected && !is_editing {
+				render_command_actions(cmd)
+			}
+
+			// Show Save button when editing
+			if is_editing {
+				render_save_action(cmd)
+			}
+		}
+	}
+}
+
+// Helper to render Edit/Del buttons
+render_command_actions :: proc(cmd: ^SavedCommand) {
+	// Edit button
+	if clay.UI()(
+	{
+		id = clay.ID("EditBtn", cmd.id),
+		layout = {
+			sizing = {width = clay.SizingFixed(50), height = clay.SizingFixed(28)},
+			childAlignment = {x = .Center, y = .Center},
+		},
+		backgroundColor = COLOR_WARNING,
+		cornerRadius = {4, 4, 4, 4},
+	},
+	) {
+		clay.Text(
+			"Edit",
+			clay.TextConfig({textColor = COLOR_BG, fontSize = 14, fontId = FONT_ID_BODY_14}),
+		)
+	}
+
+	// Delete button
+	if clay.UI()(
+	{
+		id = clay.ID("DelBtn", cmd.id),
+		layout = {
+			sizing = {width = clay.SizingFixed(50), height = clay.SizingFixed(28)},
+			childAlignment = {x = .Center, y = .Center},
+		},
+		backgroundColor = COLOR_ERROR,
+		cornerRadius = {4, 4, 4, 4},
+	},
+	) {
+		clay.Text(
+			"Del",
+			clay.TextConfig({textColor = COLOR_TEXT, fontSize = 14, fontId = FONT_ID_BODY_14}),
+		)
+	}
+}
+
+render_save_action :: proc(cmd: ^SavedCommand) {
+	// Container for Save and Move
+	if clay.UI()({layout = {childGap = 4}}) {
+		if clay.UI()(
+		{
+			id = clay.ID("SaveNameBtn", cmd.id),
+			layout = {
+				sizing = {width = clay.SizingFixed(50), height = clay.SizingFixed(28)},
+				childAlignment = {x = .Center, y = .Center},
+			},
+			backgroundColor = COLOR_SUCCESS,
+			cornerRadius = {4, 4, 4, 4},
+		},
+		) {
+			clay.Text(
+				"Save",
+				clay.TextConfig({textColor = COLOR_TEXT, fontSize = 14, fontId = FONT_ID_BODY_14}),
+			)
+		}
+
+		render_move_button(cmd)
+	}
+}
+
+
 // Create the sidebar with search and command list
 sidebar_component :: proc() {
 	if clay.UI()(
@@ -456,6 +748,63 @@ sidebar_component :: proc() {
 			"Liteman",
 			clay.TextConfig({textColor = COLOR_TEXT, fontSize = 28, fontId = FONT_ID_BODY_28}),
 		)
+
+		// Move Mode controls
+		if _, ok := app_state.moving_cmd_id.?; ok {
+			render_move_cancel_button()
+			render_root_drop_target()
+		} else {
+			// New Buttons Row
+			if clay.UI()(
+			{
+				layout = {
+					sizing = {width = clay.SizingGrow({}), height = clay.SizingFixed(32)},
+					childGap = 8,
+				},
+			},
+			) {
+				// New Request Button
+				if clay.UI()(
+				{
+					id = clay.ID("NewRequestBtn"),
+					layout = {
+						sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
+						childAlignment = {x = .Center, y = .Center},
+					},
+					backgroundColor = clay.PointerOver(clay.ID("NewRequestBtn")) ? COLOR_ACCENT_HOVER : COLOR_ACCENT,
+					cornerRadius = {4, 4, 4, 4},
+				},
+				) {
+					clay.Text(
+						"New Req",
+						clay.TextConfig(
+							{textColor = COLOR_TEXT, fontSize = 14, fontId = FONT_ID_BODY_14},
+						),
+					)
+				}
+
+				// New Folder Button
+				if clay.UI()(
+				{
+					id = clay.ID("NewFolderBtn"),
+					layout = {
+						sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
+						childAlignment = {x = .Center, y = .Center},
+					},
+					backgroundColor = clay.PointerOver(clay.ID("NewFolderBtn")) ? COLOR_PANEL_HOVER : COLOR_PANEL,
+					cornerRadius = {4, 4, 4, 4},
+				},
+				) {
+					clay.Text(
+						"New Folder",
+						clay.TextConfig(
+							{textColor = COLOR_TEXT, fontSize = 14, fontId = FONT_ID_BODY_14},
+						),
+					)
+				}
+			}
+		}
+
 
 		// Search input
 		search_bg := focused_input == .Search ? COLOR_INPUT_FOCUS : COLOR_INPUT
@@ -518,186 +867,81 @@ sidebar_component :: proc() {
 				clip = {vertical = true, childOffset = sidebar_scroll_offset},
 			},
 			) {
-				filtered_cmds := get_filtered_commands()
+				// Use recursive rendering for the command hierarchy
+				// Note: filtering is simpler if we just show everything for now when not searching
+				// Or implementing filter logic inside recursive function?
 
-				for cmd in filtered_cmds {
-					is_selected := app_state.selected_id == cmd.id
-					is_editing := app_state.editing_id == cmd.id
-					item_bg := is_selected ? COLOR_ACCENT : COLOR_ITEM_HOVER
+				// For now, if searching, we might want to flatten or filter.
+				// Let's assume we render the tree.
+				// If search is active, we might need a different view, but for MVP let's implement the tree.
 
-					if clay.UI()(
-					{
-						id = clay.ID("CmdItem", cmd.id),
-						layout = {
-							sizing = {width = clay.SizingGrow({}), height = clay.SizingFixed(44)},
-							padding = {10, 10, 8, 8},
-							childAlignment = {y = .Center},
+				// Warning: get_filtered_commands() returned a flat list of pointers.
+				// We need to change how we iterate.
+
+				// Check if search is active
+				is_searching := app_state.search_len > 0
+
+				if is_searching {
+					// Fallback to flat filtered list (assumes we updated get_filtered_commands to handle types)
+					// We need to update get_filtered_commands to be recursive-aware or return a flat list of matches.
+					// Implementation of that is pending in next steps.
+					// For now, let's just render the root level recursively.
+
+					// Actually, the previous implementation of get_filtered_commands returns pointers.
+					// Let's rely on that for search for now, but we need to update it to traverse children.
+					// And we need to update the rendering loop here to handle pointers vs value iteration.
+
+					filtered_cmds := get_filtered_commands()
+					for cmd_ptr, i in filtered_cmds {
+						// Render as flat list if searching (ignoring depth/folder structure for simplicity in search results)
+						// Or we can try to find their parents... simpler to just list matches.
+
+						// Using a simplified render logic for search results?
+						// We can just reuse the "request" style rendering.
+
+						// FIX: We need to handle dereferencing properly
+						cmd := cmd_ptr // It's a pointer
+
+						is_selected := app_state.selected_id == cmd.id
+						item_bg := is_selected ? COLOR_ACCENT : COLOR_ITEM_HOVER
+
+						if clay.UI()(
+						{
+							id = clay.ID("CmdItem", cmd.id),
+							layout = {
+								sizing = {
+									width = clay.SizingGrow({}),
+									height = clay.SizingFixed(44),
+								},
+								padding = {10, 10, 8, 8},
+								childAlignment = {y = .Center},
+							},
+							backgroundColor = item_bg,
+							cornerRadius = {4, 4, 4, 4},
 						},
-						backgroundColor = item_bg,
-						cornerRadius = {4, 4, 4, 4},
-					},
-					) {
-						// Command name or edit input
-						if is_editing {
-							if clay.UI()(
-							{
-								id = clay.ID("CmdName", cmd.id),
-								layout = {
-									sizing = {
-										width = clay.SizingGrow({}),
-										height = clay.SizingGrow({}),
+						) {
+							clay.TextDynamic(
+								cmd.name,
+								clay.TextConfig(
+									{
+										textColor = COLOR_TEXT,
+										fontSize = 18,
+										fontId = FONT_ID_BODY_18,
 									},
-									childAlignment = {y = .Center},
-								},
-								clip = {
-									horizontal = true,
-									childOffset = {-app_state.name_input_scroll_x, 0},
-								},
-							},
-							) {
-								// Show editable name input
-								name_text := buffer_to_string(
-									app_state.name_input[:],
-									app_state.name_input_len,
-								)
-								if app_state.name_input_len > 0 {
-									clay.TextDynamic(
-										name_text,
-										clay.TextConfig(
-											{
-												textColor = COLOR_TEXT,
-												fontSize = 18,
-												fontId = FONT_ID_BODY_18,
-											},
-										),
-									)
-								} else {
-									clay.Text(
-										"Enter name...",
-										clay.TextConfig(
-											{
-												textColor = COLOR_TEXT_DIM,
-												fontSize = 18,
-												fontId = FONT_ID_BODY_18,
-											},
-										),
-									)
-								}
-							}
-						} else {
-							if clay.UI()(
-							{
-								id = clay.ID("CmdName", cmd.id),
-								layout = {
-									sizing = {
-										width = clay.SizingGrow({}),
-										height = clay.SizingGrow({}),
-									},
-									childAlignment = {y = .Center},
-								},
-								// limit layout but don't clip tightly or use empty clip?
-								// Actually, let's use clip to prevent overflow but no offset
-								clip = {horizontal = true},
-							},
-							) {
-								clay.TextDynamic(
-									cmd.name,
-									clay.TextConfig(
-										{
-											textColor = COLOR_TEXT,
-											fontSize = 18,
-											fontId = FONT_ID_BODY_18,
-										},
-									),
-								)
+								),
+							)
+
+							// Allow selection
+							if is_selected {
+								render_command_actions(cmd)
 							}
 						}
+					}
 
-						// Show buttons when selected
-						if is_selected && !is_editing {
-							// Edit button
-							if clay.UI()(
-							{
-								id = clay.ID("EditBtn", cmd.id),
-								layout = {
-									sizing = {
-										width = clay.SizingFixed(50),
-										height = clay.SizingFixed(28),
-									},
-									childAlignment = {x = .Center, y = .Center},
-								},
-								backgroundColor = COLOR_WARNING,
-								cornerRadius = {4, 4, 4, 4},
-							},
-							) {
-								clay.Text(
-									"Edit",
-									clay.TextConfig(
-										{
-											textColor = COLOR_BG,
-											fontSize = 14,
-											fontId = FONT_ID_BODY_14,
-										},
-									),
-								)
-							}
-
-							// Delete button
-							if clay.UI()(
-							{
-								id = clay.ID("DelBtn", cmd.id),
-								layout = {
-									sizing = {
-										width = clay.SizingFixed(50),
-										height = clay.SizingFixed(28),
-									},
-									childAlignment = {x = .Center, y = .Center},
-								},
-								backgroundColor = COLOR_ERROR,
-								cornerRadius = {4, 4, 4, 4},
-							},
-							) {
-								clay.Text(
-									"Del",
-									clay.TextConfig(
-										{
-											textColor = COLOR_TEXT,
-											fontSize = 14,
-											fontId = FONT_ID_BODY_14,
-										},
-									),
-								)
-							}
-						}
-
-						// Show Save button when editing
-						if is_editing {
-							if clay.UI()(
-							{
-								id = clay.ID("SaveNameBtn", cmd.id),
-								layout = {
-									sizing = {
-										width = clay.SizingFixed(50),
-										height = clay.SizingFixed(28),
-									},
-									childAlignment = {x = .Center, y = .Center},
-								},
-								backgroundColor = COLOR_SUCCESS,
-								cornerRadius = {4, 4, 4, 4},
-							},
-							) {
-								clay.Text(
-									"Save",
-									clay.TextConfig(
-										{
-											textColor = COLOR_TEXT,
-											fontSize = 14,
-											fontId = FONT_ID_BODY_14,
-										},
-									),
-								)
-							}
-						}
+				} else {
+					// Standard recursive tree view
+					for i := 0; i < len(app_state.commands); i += 1 {
+						render_command_node(&app_state.commands, i, 0)
 					}
 				}
 			}
@@ -1705,7 +1949,7 @@ draw_text_cursor :: proc() {
 }
 
 // Handle click interactions
-handle_interactions :: proc() {
+deprecated_handle_interactions :: proc() {
 	// Check search box click and drag for selection
 	if clay.PointerOver(clay.ID("SearchBox")) {
 		bounds_data := clay.GetElementData(clay.ID("SearchBox"))
@@ -2187,7 +2431,7 @@ save_current_command :: proc() {
 	// Use first 10 characters of command as default name (or less if command is shorter)
 	name_len := min(len(command), 10)
 	name := strings.clone(command[:name_len])
-	add_command(&app_state, name, command)
+	add_command_root(&app_state, name, command)
 }
 
 // Load a saved command into the input

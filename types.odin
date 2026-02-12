@@ -1,9 +1,17 @@
 package main
 
+CommandType :: enum {
+	Request,
+	Folder,
+}
+
 SavedCommand :: struct {
-	id:      u32,
-	name:    string,
-	command: string,
+	id:       u32,
+	type:     CommandType,
+	name:     string,
+	command:  string,
+	children: [dynamic]SavedCommand,
+	expanded: bool,
 }
 
 RequestState :: enum {
@@ -58,6 +66,9 @@ AppState :: struct {
 	sidebar_scrollbar_dragging:       bool,
 	sidebar_scrollbar_drag_start_y:   f32,
 	sidebar_scrollbar_scroll_start_y: f32,
+
+	// Move mode
+	moving_cmd_id:                    Maybe(u32),
 }
 
 ResponseTab :: enum {
