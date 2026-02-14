@@ -42,14 +42,6 @@ check_command_interactions :: proc(commands: ^[dynamic]SavedCommand) -> bool {
 			}
 		}
 
-		// Move button click
-		if clay.PointerOver(clay.ID("MoveBtn", cmd.id)) {
-			if raylib.IsMouseButtonPressed(.LEFT) {
-				app_state.moving_cmd_id = cmd.id
-				return true
-			}
-		}
-
 		// Check for clicks on the command name (when editing)
 		if editing_id, ok := app_state.editing_id.?; ok && editing_id == cmd.id {
 			if clay.PointerOver(clay.ID("CmdName", cmd.id)) {
@@ -83,29 +75,25 @@ check_command_interactions :: proc(commands: ^[dynamic]SavedCommand) -> bool {
 			}
 		}
 
-		// Move Target Logic (if in move mode)
-		if moving_id, ok := app_state.moving_cmd_id.?; ok {
-			// If clicking on this item (and it's not the one being moved)
-			if cmd.id != moving_id {
-				if clay.PointerOver(clay.ID("CmdItem", cmd.id)) {
-					if raylib.IsMouseButtonPressed(.LEFT) {
-						// Execute Move
-						if move_command(&app_state, moving_id, cmd.id) {
-							app_state.moving_cmd_id = nil
-							app_state.editing_id = nil // Exit edit mode
-						} else {
-							// Invalid move (e.g. into descendant)
-							// Do nothing or user feedback
+		// Drag/Drop and Selection Logic
+		if clay.PointerOver(clay.ID("CmdItem", cmd.id)) {
+			// 1. Drop Logic (if already dragging)
+			if app_state.is_dragging {
+				if dragging_id, ok := app_state.dragging_id.?; ok && dragging_id != cmd.id {
+					// Drop on Folder
+					if cmd.type == .Folder {
+						if raylib.IsMouseButtonReleased(.LEFT) {
+							move_command(&app_state, dragging_id, cmd.id)
+							app_state.dragging_id = nil
+							app_state.is_dragging = false
+							return true
 						}
-						return true
 					}
 				}
-			}
-		} else {
-			// Normal Command/Folder item click (select) only if NOT in move mode
-			if clay.PointerOver(clay.ID("CmdItem", cmd.id)) {
+			} else {
+				// 2. Start Drag / Select Logic (if not dragging)
 				if raylib.IsMouseButtonPressed(.LEFT) {
-					// Only select if not clicking buttons or editing name or toggle
+					// Only select/drag if not clicking buttons
 					is_editing := false
 					if eid, ok := app_state.editing_id.?; ok && eid == cmd.id {
 						is_editing = true
@@ -124,9 +112,15 @@ check_command_interactions :: proc(commands: ^[dynamic]SavedCommand) -> bool {
 					if !clay.PointerOver(clay.ID("EditBtn", cmd.id)) &&
 					   !clay.PointerOver(clay.ID("DelBtn", cmd.id)) &&
 					   !clay.PointerOver(clay.ID("SaveNameBtn", cmd.id)) &&
-					   !clay.PointerOver(clay.ID("MoveBtn", cmd.id)) &&
 					   !clicked_name_while_editing &&
 					   !is_toggle {
+
+						// Start Potential Drag
+						app_state.dragging_id = cmd.id
+						app_state.drag_start_pos = raylib.GetMousePosition()
+						app_state.is_dragging = false // Will be set to true if moved
+
+						// Also Select
 						if cmd.type == .Folder {
 							app_state.selected_id = cmd.id
 						} else {
@@ -150,23 +144,49 @@ check_command_interactions :: proc(commands: ^[dynamic]SavedCommand) -> bool {
 
 // Handle click interactions
 handle_interactions :: proc() {
-	// Check dragging cancel (Move mode)
-	if _, ok := app_state.moving_cmd_id.?; ok {
-		if clay.PointerOver(clay.ID("MoveCancelBtn")) {
-			if raylib.IsMouseButtonPressed(.LEFT) {
-				app_state.moving_cmd_id = nil
-			}
-		}
-		if clay.PointerOver(clay.ID("DropRoot")) {
-			if raylib.IsMouseButtonPressed(.LEFT) {
-				if moving_id, ok := app_state.moving_cmd_id.?; ok {
-					move_command(&app_state, moving_id, 0)
-					app_state.moving_cmd_id = nil
-					app_state.editing_id = nil
+	// 1. Check specific item interactions first
+	item_handled := check_command_interactions(&app_state.commands)
+
+	// 2. Check Global Drag Logic (if not handled by item)
+	if dragging_id, ok := app_state.dragging_id.?; ok {
+		// Check for drag threshold
+		if !app_state.is_dragging {
+			if raylib.IsMouseButtonDown(.LEFT) {
+				// Manual vector subtraction
+				current_pos := raylib.GetMousePosition()
+				delta_x := current_pos.x - app_state.drag_start_pos.x
+				delta_y := current_pos.y - app_state.drag_start_pos.y
+
+				// Length squared check is faster, 5*5 = 25
+				if (delta_x * delta_x + delta_y * delta_y) > 25.0 {
+					app_state.is_dragging = true
 				}
+			} else {
+				// Mouse released before drag threshold -> just a click (already handled as selection)
+				// Only clear if not handled by item (though item click would have returned true)
+				if !item_handled {
+					app_state.dragging_id = nil
+				}
+			}
+		} else {
+			// Already dragging
+			// Only process global drop if item didn't handle it
+			if !item_handled && raylib.IsMouseButtonReleased(.LEFT) {
+				// Mouse Up while dragging
+				// If we are here, it means we didn't drop on a specific folder (handled in check_command_interactions)
+				// So check if we dropped on sidebar (Move to Root)
+
+				if clay.PointerOver(clay.ID("Sidebar")) {
+					move_command(&app_state, dragging_id, 0)
+				}
+
+				// Logic for canceling drag if dropped elsewhere
+				app_state.dragging_id = nil
+				app_state.is_dragging = false
 			}
 		}
 	}
+
 
 	// Check New Request button
 	if clay.PointerOver(clay.ID("NewRequestBtn")) {
@@ -292,7 +312,7 @@ handle_interactions :: proc() {
 	}
 
 	// Check command interactions (recursive)
-	check_command_interactions(&app_state.commands)
+
 
 	// Track keyboard input for focused field
 	#partial switch focused_input {

@@ -1,5 +1,7 @@
 package main
 
+import "vendor:raylib"
+
 CommandType :: enum {
 	Request,
 	Folder,
@@ -67,8 +69,10 @@ AppState :: struct {
 	sidebar_scrollbar_drag_start_y:   f32,
 	sidebar_scrollbar_scroll_start_y: f32,
 
-	// Move mode
-	moving_cmd_id:                    Maybe(u32),
+	// Drag and Drop state
+	dragging_id:                      Maybe(u32),
+	drag_start_pos:                   raylib.Vector2,
+	is_dragging:                      bool,
 }
 
 ResponseTab :: enum {

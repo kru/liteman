@@ -23,6 +23,7 @@ COLOR_WARNING :: clay.Color{220, 180, 80, 255}
 COLOR_ERROR :: clay.Color{220, 90, 90, 255}
 COLOR_ITEM_HOVER :: clay.Color{55, 58, 65, 255}
 COLOR_PANEL_HOVER :: clay.Color{60, 62, 68, 255}
+COLOR_MOVE_HOVER :: clay.Color{100, 149, 237, 255}
 
 
 // Syntax highlighting colors for curl commands
@@ -462,9 +463,11 @@ render_command_node :: proc(commands: ^[dynamic]SavedCommand, cmd_idx: int, dept
 	if cmd.type == .Folder {
 		// Folder rendering
 		bg_color := is_selected ? COLOR_ACCENT : COLOR_FOLDER
-		if moving_id, ok := app_state.moving_cmd_id.?; ok {
-			if moving_id != cmd.id && clay.PointerOver(clay.ID("CmdItem", cmd.id)) {
-				bg_color = COLOR_MOVE_HOVER
+		if app_state.is_dragging {
+			if dragging_id, ok := app_state.dragging_id.?; ok && dragging_id != cmd.id {
+				if clay.PointerOver(clay.ID("CmdItem", cmd.id)) {
+					bg_color = COLOR_MOVE_HOVER
+				}
 			}
 		}
 
@@ -482,22 +485,17 @@ render_command_node :: proc(commands: ^[dynamic]SavedCommand, cmd_idx: int, dept
 		},
 		) {
 			// Expand/Collapse toggle (caret)
-			caret_text := cmd.expanded ? "v" : ">"
+			// Text removed, will draw custom vector icon in main loop
 			if clay.UI()(
 			{
 				id = clay.ID("FolderToggle", cmd.id),
 				layout = {
-					sizing = {width = clay.SizingFixed(16), height = clay.SizingFixed(16)},
+					sizing = {width = clay.SizingFixed(24), height = clay.SizingFixed(24)},
 					childAlignment = {x = .Center, y = .Center},
 				},
 			},
 			) {
-				clay.TextDynamic(
-					caret_text,
-					clay.TextConfig(
-						{textColor = COLOR_TEXT, fontSize = 14, fontId = FONT_ID_BODY_14},
-					),
-				)
+				// Empty - custom draw
 			}
 
 			// Folder Name
@@ -556,20 +554,8 @@ render_command_node :: proc(commands: ^[dynamic]SavedCommand, cmd_idx: int, dept
 				render_save_action(cmd)
 			}
 
-			// Move Mode: Highlight as drop target
-			if moving_id, ok := app_state.moving_cmd_id.?; ok && !is_editing {
-				// Don't highlight self or descendants (simplified check: just self for now)
-				if moving_id != cmd.id {
-					// Check if mouse over to highlight
-					if clay.PointerOver(clay.ID("CmdItem", cmd.id)) {
-						// Highlight border or bg to indicate drop target
-						// We can't easily draw a border *around* the existing element here without changing layout...
-						// But we can change background color if we passed it in.
-						// The background color is set in the clay.UI call above.
-						// We'd need to change logic above.
-					}
-				}
-			}
+			// Drag Mode: Highlight as drop target (implementation pending)
+			// Will be added when drag logic is implemented
 		}
 
 
@@ -705,26 +691,21 @@ render_command_actions :: proc(cmd: ^SavedCommand) {
 }
 
 render_save_action :: proc(cmd: ^SavedCommand) {
-	// Container for Save and Move
-	if clay.UI()({layout = {childGap = 4}}) {
-		if clay.UI()(
-		{
-			id = clay.ID("SaveNameBtn", cmd.id),
-			layout = {
-				sizing = {width = clay.SizingFixed(50), height = clay.SizingFixed(28)},
-				childAlignment = {x = .Center, y = .Center},
-			},
-			backgroundColor = COLOR_SUCCESS,
-			cornerRadius = {4, 4, 4, 4},
+	if clay.UI()(
+	{
+		id = clay.ID("SaveNameBtn", cmd.id),
+		layout = {
+			sizing = {width = clay.SizingFixed(50), height = clay.SizingFixed(28)},
+			childAlignment = {x = .Center, y = .Center},
 		},
-		) {
-			clay.Text(
-				"Save",
-				clay.TextConfig({textColor = COLOR_TEXT, fontSize = 14, fontId = FONT_ID_BODY_14}),
-			)
-		}
-
-		render_move_button(cmd)
+		backgroundColor = COLOR_SUCCESS,
+		cornerRadius = {4, 4, 4, 4},
+	},
+	) {
+		clay.Text(
+			"Save",
+			clay.TextConfig({textColor = COLOR_TEXT, fontSize = 14, fontId = FONT_ID_BODY_14}),
+		)
 	}
 }
 
@@ -749,63 +730,55 @@ sidebar_component :: proc() {
 			clay.TextConfig({textColor = COLOR_TEXT, fontSize = 28, fontId = FONT_ID_BODY_28}),
 		)
 
-		// Move Mode controls
-		if _, ok := app_state.moving_cmd_id.?; ok {
-			render_move_cancel_button()
-			render_root_drop_target()
-		} else {
-			// New Buttons Row
+		// New Buttons Row
+		if clay.UI()(
+		{
+			layout = {
+				sizing = {width = clay.SizingGrow({}), height = clay.SizingFixed(32)},
+				childGap = 8,
+			},
+		},
+		) {
+			// New Request Button
 			if clay.UI()(
 			{
+				id = clay.ID("NewRequestBtn"),
 				layout = {
-					sizing = {width = clay.SizingGrow({}), height = clay.SizingFixed(32)},
-					childGap = 8,
+					sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
+					childAlignment = {x = .Center, y = .Center},
 				},
+				backgroundColor = clay.PointerOver(clay.ID("NewRequestBtn")) ? COLOR_ACCENT_HOVER : COLOR_ACCENT,
+				cornerRadius = {4, 4, 4, 4},
 			},
 			) {
-				// New Request Button
-				if clay.UI()(
-				{
-					id = clay.ID("NewRequestBtn"),
-					layout = {
-						sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
-						childAlignment = {x = .Center, y = .Center},
-					},
-					backgroundColor = clay.PointerOver(clay.ID("NewRequestBtn")) ? COLOR_ACCENT_HOVER : COLOR_ACCENT,
-					cornerRadius = {4, 4, 4, 4},
-				},
-				) {
-					clay.Text(
-						"New Req",
-						clay.TextConfig(
-							{textColor = COLOR_TEXT, fontSize = 14, fontId = FONT_ID_BODY_14},
-						),
-					)
-				}
+				clay.Text(
+					"New Req",
+					clay.TextConfig(
+						{textColor = COLOR_TEXT, fontSize = 14, fontId = FONT_ID_BODY_14},
+					),
+				)
+			}
 
-				// New Folder Button
-				if clay.UI()(
-				{
-					id = clay.ID("NewFolderBtn"),
-					layout = {
-						sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
-						childAlignment = {x = .Center, y = .Center},
-					},
-					backgroundColor = clay.PointerOver(clay.ID("NewFolderBtn")) ? COLOR_PANEL_HOVER : COLOR_PANEL,
-					cornerRadius = {4, 4, 4, 4},
+			// New Folder Button
+			if clay.UI()(
+			{
+				id = clay.ID("NewFolderBtn"),
+				layout = {
+					sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
+					childAlignment = {x = .Center, y = .Center},
 				},
-				) {
-					clay.Text(
-						"New Folder",
-						clay.TextConfig(
-							{textColor = COLOR_TEXT, fontSize = 14, fontId = FONT_ID_BODY_14},
-						),
-					)
-				}
+				backgroundColor = clay.PointerOver(clay.ID("NewFolderBtn")) ? COLOR_PANEL_HOVER : COLOR_PANEL,
+				cornerRadius = {4, 4, 4, 4},
+			},
+			) {
+				clay.Text(
+					"New Folder",
+					clay.TextConfig(
+						{textColor = COLOR_TEXT, fontSize = 14, fontId = FONT_ID_BODY_14},
+					),
+				)
 			}
 		}
-
-
 		// Search input
 		search_bg := focused_input == .Search ? COLOR_INPUT_FOCUS : COLOR_INPUT
 		if clay.UI()(
@@ -2356,18 +2329,27 @@ save_editing_command :: proc() {
 	if editing_id, ok := app_state.editing_id.?; ok {
 		new_name := buffer_to_string(app_state.name_input[:], app_state.name_input_len)
 		if app_state.name_input_len > 0 {
-			// Find the command
-			for &cmd in app_state.commands {
-				if cmd.id == editing_id {
-					// If we are editing the currently selected command, also update its content from the input box
-					new_command := cmd.command
-					if selected_id, sel_ok := app_state.selected_id.?;
-					   sel_ok && selected_id == editing_id {
-						new_command = editor_get_text(&app_state.curl_editor)
-					}
+			// Find the command (recursive)
+			if cmd_ptr := find_command(&app_state, editing_id); cmd_ptr != nil {
+				// Determine command content
+				new_command := ""
+				must_free := false
 
-					update_command(&app_state, editing_id, new_name, new_command)
-					break
+				if selected_id, sel_ok := app_state.selected_id.?;
+				   sel_ok && selected_id == editing_id {
+					// From editor - safe to pass directly as it's separate memory
+					new_command = editor_get_text(&app_state.curl_editor)
+				} else {
+					// From existing command - MUST clone to avoid Use-After-Free
+					// because update_command frees the old cmd_ptr.command
+					new_command = strings.clone(cmd_ptr.command)
+					must_free = true
+				}
+
+				update_command(&app_state, editing_id, new_name, new_command)
+
+				if must_free {
+					delete(new_command)
 				}
 			}
 		}
@@ -2419,12 +2401,15 @@ save_current_command :: proc() {
 
 	// If a command is selected, update it instead of creating a new one
 	if selected_id, ok := app_state.selected_id.?; ok {
-		// Find the command to get its current name
-		for cmd in app_state.commands {
-			if cmd.id == selected_id {
-				update_command(&app_state, selected_id, cmd.name, command)
-				return
-			}
+		// Find the command to get its current name (recursive)
+		if cmd_ptr := find_command(&app_state, selected_id); cmd_ptr != nil {
+			// Clone name to avoid Use-After-Free in update_command
+			// (update_command frees cmd.name, so we can't pass cmd.name directly if it points to the same memory)
+			current_name := strings.clone(cmd_ptr.name)
+			defer delete(current_name)
+
+			update_command(&app_state, selected_id, current_name, command)
+			return
 		}
 	}
 
@@ -2610,6 +2595,7 @@ main :: proc() {
 	clay.SetMeasureTextFunction(measure_text, nil)
 
 	raylib.SetConfigFlags({.VSYNC_HINT, .WINDOW_RESIZABLE, .MSAA_4X_HINT})
+
 	raylib.InitWindow(windowWidth, windowHeight, "Liteman")
 	raylib.SetTargetFPS(raylib.GetMonitorRefreshRate(0))
 
@@ -2693,12 +2679,39 @@ main :: proc() {
 		}
 
 		render_commands := create_layout()
-
+		// Rendering
 		raylib.BeginDrawing()
+		raylib.ClearBackground(clay_color_to_rl_color(COLOR_SIDEBAR))
 		clay_raylib_render(&render_commands)
+
+		// Draw custom folder icons
+		// Draw custom folder icons (only if not searching, as search view is flat)
+		if app_state.search_len == 0 {
+			draw_folder_icons_recursive(&app_state.commands)
+		}
 
 		// Draw cursor for focused input
 		draw_text_cursor()
+
+		// Drag Ghost Rendering
+		if app_state.is_dragging {
+			mouse_pos := raylib.GetMousePosition()
+			// Simple ghost rectangle
+			raylib.DrawRectangle(
+				cast(i32)mouse_pos.x + 10,
+				cast(i32)mouse_pos.y + 10,
+				150,
+				30,
+				clay_color_to_rl_color({80, 80, 90, 200}),
+			)
+			raylib.DrawText(
+				"Moving...",
+				cast(i32)mouse_pos.x + 20,
+				cast(i32)mouse_pos.y + 18,
+				20,
+				raylib.WHITE,
+			)
+		}
 
 		raylib.EndDrawing()
 	}
@@ -2874,5 +2887,52 @@ get_system_fonts :: proc() -> []string {
 		return candidates[:]
 	} else {
 		return []string{}
+	}
+}
+
+// Helper to draw folder icons
+draw_folder_icons_recursive :: proc(commands: ^[dynamic]SavedCommand) {
+	for &cmd in commands {
+		if cmd.type == .Folder {
+			// Get layout info
+			data := clay.GetElementData(clay.ID("FolderToggle", cmd.id))
+			if data.found {
+				// Draw based on state
+				center := raylib.Vector2 {
+					data.boundingBox.x + data.boundingBox.width / 2,
+					data.boundingBox.y + data.boundingBox.height / 2,
+				}
+
+				// Size of the icon
+				size: f32 = 10.0
+
+				color := clay_color_to_rl_color(COLOR_TEXT_DIM)
+				if clay.PointerOver(clay.ID("FolderToggle", cmd.id)) {
+					color = clay_color_to_rl_color(COLOR_ACCENT)
+				}
+
+				if cmd.expanded {
+					// Down Triangle (v) - CCW Order: Top Right -> Top Left -> Bottom
+					raylib.DrawTriangle(
+						{center.x + size / 2, center.y - size / 2}, // Top Right
+						{center.x - size / 2, center.y - size / 2}, // Top Left
+						{center.x, center.y + size / 2}, // Bottom
+						color,
+					)
+				} else {
+					// Right Triangle (>) - CCW Order: Top Left -> Bottom Left -> Right
+					raylib.DrawTriangle(
+						{center.x - size / 3, center.y - size / 2}, // Top Left
+						{center.x - size / 3, center.y + size / 2}, // Bottom Left
+						{center.x + size / 2, center.y}, // Right
+						color,
+					)
+				}
+			}
+
+			if cmd.expanded {
+				draw_folder_icons_recursive(&cmd.children)
+			}
+		}
 	}
 }
