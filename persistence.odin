@@ -3,9 +3,37 @@ package main
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 
-COMMANDS_FILE :: "commands.json"
+// Get the configuration directory for the application
+get_config_dir :: proc() -> string {
+	when ODIN_OS == .Windows {
+		app_data := os.get_env("APPDATA", context.temp_allocator)
+		if app_data != "" {
+			return filepath.join({app_data, "Liteman"}, context.temp_allocator)
+		}
+	} else when ODIN_OS == .Darwin {
+		home := os.get_env("HOME", context.temp_allocator)
+		if home != "" {
+			return filepath.join(
+				{home, "Library", "Application Support", "Liteman"},
+				context.temp_allocator,
+			)
+		}
+	} else {
+		home := os.get_env("HOME", context.temp_allocator)
+		if home != "" {
+			return filepath.join({home, ".config", "liteman"}, context.temp_allocator)
+		}
+	}
+	return "."
+}
+
+get_commands_file_path :: proc() -> string {
+	dir := get_config_dir()
+	return filepath.join({dir, "commands.json"}, context.temp_allocator)
+}
 
 // JSON-serializable version of SavedCommand
 SavedCommandJson :: struct {
@@ -72,7 +100,7 @@ destroy_json_struct :: proc(jcmd: SavedCommandJson) {
 }
 
 // Save commands to JSON file
-save_commands :: proc(commands: []SavedCommand) -> bool {
+save_commands :: proc(commands: []SavedCommand, file_path: string = "") -> bool {
 	json_commands := make([dynamic]SavedCommandJson, len(commands))
 	defer {
 		for cmd in json_commands {
@@ -97,14 +125,29 @@ save_commands :: proc(commands: []SavedCommand) -> bool {
 	}
 	defer delete(data)
 
-	return os.write_entire_file(COMMANDS_FILE, data)
+	path_to_use := file_path
+	if path_to_use == "" {
+		// Ensure config directory exists only when using default path
+		config_dir := get_config_dir()
+		if config_dir != "." && !os.exists(config_dir) {
+			os.make_directory(config_dir)
+		}
+		path_to_use = get_commands_file_path()
+	}
+
+	return os.write_entire_file(path_to_use, data)
 }
 
 // Load commands from JSON file
-load_commands :: proc() -> ([dynamic]SavedCommand, bool) {
+load_commands :: proc(file_path: string = "") -> ([dynamic]SavedCommand, bool) {
 	commands := make([dynamic]SavedCommand)
 
-	data, ok := os.read_entire_file(COMMANDS_FILE)
+	path_to_use := file_path
+	if path_to_use == "" {
+		path_to_use = get_commands_file_path()
+	}
+
+	data, ok := os.read_entire_file(path_to_use)
 	if !ok {
 		// File doesn't exist yet, return empty list
 		return commands, true
