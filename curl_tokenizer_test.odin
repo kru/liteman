@@ -159,3 +159,30 @@ test_format_display_lines_wrapping :: proc(t: ^testing.T) {
 		testing.expect_value(t, len(l1.tokens), 2)
 	}
 }
+
+@(test)
+test_tokenize_missing_space_method_url :: proc(t: ^testing.T) {
+	// Bug report: curl -X GET"https..." fails
+	input := "curl -X GET\"https://example.com\""
+	tokens, _ := tokenize_curl(input)
+	defer delete(tokens)
+
+	// Should identify:
+	// curl (Command)
+	// -X (Flag)
+	// GET (Method)
+	// "https://example.com" (String? or URL?)
+
+	// If it parses GET"https..." as one Data token, that's the bug.
+
+	found_method := false
+	found_url_or_string := false
+
+	for token in tokens {
+		if token.type == .Method {found_method = true}
+		if token.type == .String || token.type == .URL {found_url_or_string = true}
+	}
+
+	testing.expect(t, found_method, "Should find Method GET even without space before quote")
+	testing.expect(t, found_url_or_string, "Should find URL/String")
+}

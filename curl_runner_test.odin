@@ -105,3 +105,52 @@ test_escape_arg_windows_json :: proc(t: ^testing.T) {
 	expected := "\"{\\\"key\\\": \\\"value\\\"}\""
 	testing.expect_value(t, escaped, expected)
 }
+
+@(test)
+test_tokenize_command_method_missing_space :: proc(t: ^testing.T) {
+	// curl -X GET"https://example.com"
+	input := "curl -X GET\"https://example.com\""
+	args := tokenize_command(input)
+	defer delete(args) // and contents? leak for test simplicity
+
+	// Expect: curl, -X, GET, https://example.com
+	testing.expect_value(t, len(args), 4)
+	if len(args) >= 4 {
+		testing.expect_value(t, args[0], "curl")
+		testing.expect_value(t, args[1], "-X")
+		testing.expect_value(t, args[2], "GET")
+		testing.expect_value(t, args[3], "https://example.com")
+	}
+}
+
+@(test)
+test_tokenize_command_method_no_space_unquoted :: proc(t: ^testing.T) {
+	// curl -X GEThttps://example.com (no space, no quotes)
+	input := "curl -X GEThttps://example.com"
+	args := tokenize_command(input)
+	defer delete(args)
+
+	// Expect: curl, -X, GET, https://example.com
+	testing.expect_value(t, len(args), 4)
+	if len(args) >= 4 {
+		testing.expect_value(t, args[0], "curl")
+		testing.expect_value(t, args[1], "-X")
+		testing.expect_value(t, args[2], "GET")
+		testing.expect_value(t, args[3], "https://example.com")
+	}
+}
+
+@(test)
+test_tokenize_command_key_value_joined :: proc(t: ^testing.T) {
+	// curl -d key="value"
+	// Should be: key=value (joined)
+	input := "curl -d key=\"value\""
+	args := tokenize_command(input)
+	defer delete(args)
+
+	// Expect: curl, -d, key=value
+	testing.expect_value(t, len(args), 3)
+	if len(args) >= 3 {
+		testing.expect_value(t, args[2], "key=value")
+	}
+}

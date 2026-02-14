@@ -278,55 +278,113 @@ sanitize_curl_command_string :: proc(input: string, allocator := context.allocat
 tokenize_command :: proc(input: string, allocator := context.allocator) -> [dynamic]string {
 	args := make([dynamic]string, allocator)
 
+	// Use the syntax highlighter tokenizer!
+	tokens, processed := tokenize_curl(input, allocator)
+	defer delete(tokens)
+
 	current_arg := strings.builder_make(allocator)
-	// defer strings.builder_destroy(&current_arg) // Don't destroy, we return the string
 
-	in_quote: rune = 0
-	escaped := false
+	// Track state for joining/splitting
+	last_type: Maybe(TokenType) = nil
+	has_content := false
 
-	for c in input {
-		if escaped {
-			strings.write_rune(&current_arg, c)
-			escaped = false
-			continue
-		}
+	for i := 0; i < len(tokens); i += 1 {
+		token := tokens[i]
 
-		if c == '\\' {
-			// Only treat backslash as escape if inside double quotes or outside quotes
-			// Inside single quotes, backslash is literal usually?
-			// Bash: 'it\'s' -> invalid. 'it'\''s' -> valid.
-			// Simple approach: Always escape next char if \
-			// But wait, Windows paths use \.
-			// Let's assume input is Unix-style curl command (forward slashes or quoted backslashes).
-			escaped = true
-			continue
-		}
-
-		if in_quote != 0 {
-			if c == in_quote {
-				in_quote = 0
-			} else {
-				strings.write_rune(&current_arg, c)
+		if token.type == .Whitespace || token.type == .Newline {
+			// Delimiter
+			if has_content {
+				append(&args, strings.to_string(current_arg))
+				current_arg = strings.builder_make(allocator)
+				has_content = false
+				last_type = nil
 			}
-		} else {
-			if c == '"' || c == '\'' {
-				in_quote = c
-			} else if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-				if strings.builder_len(current_arg) > 0 {
-					append(&args, strings.to_string(current_arg))
-					current_arg = strings.builder_make(allocator)
+			continue
+		}
+
+		// Check for split condition (if adjacent to previous content)
+		if has_content {
+			should_split := false
+
+			// Split if separating types meet
+			// Command, Flag, Method generally start/end their own arguments
+			// Data/String/JsonBrace/Backslash generally join (e.g. key="val")
+
+			if last_type != nil {
+				l_type := last_type.?
+
+				if l_type == .Command || l_type == .Flag || l_type == .Method || l_type == .URL {
+					should_split = true
+				}
+				if token.type == .Command ||
+				   token.type == .Flag ||
+				   token.type == .Method ||
+				   token.type == .URL {
+					should_split = true
+				}
+			}
+
+			if should_split {
+				append(&args, strings.to_string(current_arg))
+				current_arg = strings.builder_make(allocator)
+				// has_content remains false until we write new content?
+				// No, we are about to write to the new arg.
+			}
+		}
+
+		// Append token text to current arg
+		text := processed[token.start:token.end]
+
+		if token.type == .String {
+			// Strip outer quotes for the argument value
+			// (Runner will re-quote if needed for shell)
+			if len(text) >= 2 {
+				first := text[0]
+				last := text[len(text) - 1]
+				if (first == '"' || first == '\'') && last == first {
+					strings.write_string(&current_arg, text[1:len(text) - 1])
+				} else {
+					strings.write_string(&current_arg, text)
 				}
 			} else {
-				strings.write_rune(&current_arg, c)
+				strings.write_string(&current_arg, text)
 			}
+		} else {
+			strings.write_string(&current_arg, text)
 		}
+
+		has_content = true
+		last_type = token.type
 	}
 
-	if strings.builder_len(current_arg) > 0 {
+	if has_content {
 		append(&args, strings.to_string(current_arg))
 	}
 
-	return args
+	// Post-process: split any arg that looks like METHODhttp(s)://...
+	// e.g. "GEThttps://example.com" -> "GET", "https://example.com"
+	final := make([dynamic]string, allocator)
+	methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
+
+	for arg in args {
+		split_done := false
+		for m in methods {
+			if strings.has_prefix(arg, m) && len(arg) > len(m) {
+				rest := arg[len(m):]
+				if strings.has_prefix(rest, "http://") || strings.has_prefix(rest, "https://") {
+					append(&final, strings.clone(m, allocator))
+					append(&final, strings.clone(rest, allocator))
+					split_done = true
+					break
+				}
+			}
+		}
+		if !split_done {
+			append(&final, arg)
+		}
+	}
+
+	return final
 }
 
 // Escape argument for Windows CreateProcess
