@@ -138,6 +138,16 @@ save_commands :: proc(commands: []SavedCommand, file_path: string = "") -> bool 
 	return os.write_entire_file(path_to_use, data)
 }
 
+// Helper to free JSON struct deeply (including strings, for unmarshalled data)
+destroy_decoded_json_struct :: proc(jcmd: SavedCommandJson) {
+	delete(jcmd.name)
+	delete(jcmd.command)
+	for child in jcmd.children {
+		destroy_decoded_json_struct(child)
+	}
+	delete(jcmd.children)
+}
+
 // Load commands from JSON file
 load_commands :: proc(file_path: string = "") -> ([dynamic]SavedCommand, bool) {
 	commands := make([dynamic]SavedCommand)
@@ -161,9 +171,9 @@ load_commands :: proc(file_path: string = "") -> ([dynamic]SavedCommand, bool) {
 
 	json_commands: [dynamic]SavedCommandJson
 	defer {
-		// We need to free the JSON structs, but strings might be views into `data`?
-		// Odin's json.unmarshal typically allocates strings if they are cloned.
-		// If we use the default allocator, they are allocated.
+		for jcmd in json_commands {
+			destroy_decoded_json_struct(jcmd)
+		}
 		delete(json_commands)
 	}
 
