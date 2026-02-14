@@ -344,8 +344,3 @@ find_command_recursive :: proc(commands: []SavedCommand, id: u32) -> ^SavedComma
 find_command :: proc(state: ^AppState, id: u32) -> ^SavedCommand {
 	return find_command_recursive(state.commands[:], id)
 }
-
-// Helper to move a command to a new parent (root if parent_id is 0)
-// This is complex: we need to find the command, clone it, delete it from old location, insert into new.
-// Or just move the struct if we can get a pointer to the list containing it.
-// For now, let's defer implementation of "Move" until UI is ready.
