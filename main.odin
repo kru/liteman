@@ -6,6 +6,8 @@ import "core:fmt"
 import "core:math"
 import "core:os"
 import "core:strings"
+import "core:sync"
+import "core:thread"
 import "vendor:raylib"
 
 // Colors
@@ -111,24 +113,22 @@ measure_text :: proc "c" (
 	config: ^clay.TextElementConfig,
 	userData: rawptr,
 ) -> clay.Dimensions {
-	line_width: f32 = 0
+	// Convert text to cstring for Raylib
+	// Note: We need a temporary allocator here, but we are in a "c" proc called by Clay.
+	// Clay usually runs within the main loop where temp_allocator is valid.
+	context = runtime.default_context()
 
-	font := g_font
-	scale_factor := f32(config.fontSize) / f32(font.baseSize)
+	text_str := string(text.chars[:text.length])
+	cstr_text := strings.clone_to_cstring(text_str, context.temp_allocator)
 
-	for i in 0 ..< text.length {
-		glyph_index := text.chars[i] - 32
+	vec2 := raylib.MeasureTextEx(
+		g_font,
+		cstr_text,
+		f32(config.fontSize),
+		f32(config.letterSpacing),
+	)
 
-		glyph := font.glyphs[glyph_index]
-
-		if glyph.advanceX != 0 {
-			line_width += f32(glyph.advanceX) * scale_factor
-		} else {
-			line_width += (font.recs[glyph_index].width + f32(glyph.offsetX)) * scale_factor
-		}
-	}
-
-	return {width = line_width / 2, height = f32(config.fontSize)}
+	return {width = vec2.x, height = vec2.y}
 }
 
 error_handler :: proc "c" (err_data: clay.ErrorData) {
@@ -657,7 +657,7 @@ render_command_actions :: proc(cmd: ^SavedCommand) {
 	{
 		id = clay.ID("EditBtn", cmd.id),
 		layout = {
-			sizing = {width = clay.SizingFixed(50), height = clay.SizingFixed(28)},
+			sizing = {width = clay.SizingFixed(60), height = clay.SizingFixed(28)},
 			childAlignment = {x = .Center, y = .Center},
 		},
 		backgroundColor = COLOR_WARNING,
@@ -675,7 +675,7 @@ render_command_actions :: proc(cmd: ^SavedCommand) {
 	{
 		id = clay.ID("DelBtn", cmd.id),
 		layout = {
-			sizing = {width = clay.SizingFixed(50), height = clay.SizingFixed(28)},
+			sizing = {width = clay.SizingFixed(60), height = clay.SizingFixed(28)},
 			childAlignment = {x = .Center, y = .Center},
 		},
 		backgroundColor = COLOR_ERROR,
@@ -694,7 +694,7 @@ render_save_action :: proc(cmd: ^SavedCommand) {
 	{
 		id = clay.ID("SaveNameBtn", cmd.id),
 		layout = {
-			sizing = {width = clay.SizingFixed(50), height = clay.SizingFixed(28)},
+			sizing = {width = clay.SizingFixed(60), height = clay.SizingFixed(28)},
 			childAlignment = {x = .Center, y = .Center},
 		},
 		backgroundColor = COLOR_SUCCESS,
@@ -1140,15 +1140,16 @@ main_content_component :: proc() {
 				{
 					id = clay.ID("RunButton"),
 					layout = {
-						sizing = {width = clay.SizingFixed(80), height = clay.SizingFixed(32)},
+						sizing = {width = clay.SizingFixed(90), height = clay.SizingFixed(32)},
 						childAlignment = {x = .Center, y = .Center},
 					},
-					backgroundColor = COLOR_ACCENT,
+					backgroundColor = app_state.request_state == .Loading ? COLOR_TEXT_DIM : COLOR_ACCENT,
 					cornerRadius = {4, 4, 4, 4},
 				},
 				) {
-					clay.Text(
-						"Run",
+					run_text := app_state.request_state == .Loading ? "..." : "Run"
+					clay.TextDynamic(
+						run_text,
 						clay.TextConfig(
 							{textColor = COLOR_TEXT, fontSize = 18, fontId = FONT_ID_BODY_18},
 						),
@@ -1160,7 +1161,7 @@ main_content_component :: proc() {
 				{
 					id = clay.ID("SaveButton"),
 					layout = {
-						sizing = {width = clay.SizingFixed(80), height = clay.SizingFixed(32)},
+						sizing = {width = clay.SizingFixed(90), height = clay.SizingFixed(32)},
 						childAlignment = {x = .Center, y = .Center},
 					},
 					backgroundColor = COLOR_SUCCESS,
@@ -2009,7 +2010,9 @@ deprecated_handle_interactions :: proc() {
 	// Check Run button click
 	if clay.PointerOver(clay.ID("RunButton")) {
 		if raylib.IsMouseButtonPressed(.LEFT) {
-			execute_curl_command()
+			if app_state.request_state != .Loading {
+				execute_curl_command()
+			}
 		}
 	}
 
@@ -2398,17 +2401,35 @@ execute_curl_command :: proc() {
 	app_state.request_state = .Loading
 
 	command := editor_get_text(&app_state.curl_editor)
+
+	// Clone command to heap to pass to thread
+	cmd_ptr := new(string)
+	cmd_ptr^ = strings.clone(command)
+
+	app_state.worker_thread = thread.create(run_curl_task)
+	if app_state.worker_thread != nil {
+		app_state.worker_thread.data = cast(rawptr)cmd_ptr
+		thread.start(app_state.worker_thread)
+	} else {
+		app_state.request_state = .Error
+		app_state.error_message = strings.clone("Failed to create worker thread")
+		free(cmd_ptr)
+	}
+}
+
+// Thread procedure
+run_curl_task :: proc(t: ^thread.Thread) {
+	cmd_ptr := cast(^string)t.data
+	command := cmd_ptr^
+
 	result := run_curl(command)
 
-	if result.success {
-		app_state.response_headers = result.headers
-		app_state.response_body = result.body
-		app_state.status_code = result.status_code
-		app_state.request_state = .Success
-	} else {
-		app_state.error_message = result.error_msg
-		app_state.request_state = .Error
-	}
+	sync.mutex_lock(&app_state.worker_mutex)
+	app_state.worker_result = result
+	sync.mutex_unlock(&app_state.worker_mutex)
+
+	delete(command)
+	free(cmd_ptr)
 }
 
 // Save current command
@@ -2687,6 +2708,32 @@ main :: proc() {
 		)
 
 		handle_interactions()
+
+		// Check worker thread
+		if app_state.worker_thread != nil {
+			if thread.is_done(app_state.worker_thread) {
+				thread.join(app_state.worker_thread)
+				thread.destroy(app_state.worker_thread)
+				app_state.worker_thread = nil
+
+				sync.mutex_lock(&app_state.worker_mutex)
+				if res, ok := app_state.worker_result.?; ok {
+					if res.success {
+						app_state.response_headers = res.headers
+						app_state.response_body = res.body
+						app_state.status_code = res.status_code
+						app_state.request_state = .Success
+					} else {
+						app_state.error_message = res.error_msg
+						app_state.request_state = .Error
+					}
+					// Clear result container? technically overwriting next time is fine,
+					// but setting to nil implies handled.
+					app_state.worker_result = nil
+				}
+				sync.mutex_unlock(&app_state.worker_mutex)
+			}
+		}
 
 		// Update cursor blink timer
 		app_state.cursor_blink_timer += raylib.GetFrameTime()

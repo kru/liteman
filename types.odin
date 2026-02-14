@@ -1,5 +1,7 @@
 package main
 
+import "core:sync"
+import "core:thread"
 import "vendor:raylib"
 
 CommandType :: enum {
@@ -73,6 +75,11 @@ AppState :: struct {
 	dragging_id:                      Maybe(u32),
 	drag_start_pos:                   raylib.Vector2,
 	is_dragging:                      bool,
+
+	// Threading state
+	worker_thread:                    ^thread.Thread,
+	worker_result:                    Maybe(CurlResult),
+	worker_mutex:                     sync.Mutex,
 }
 
 ResponseTab :: enum {
@@ -82,12 +89,13 @@ ResponseTab :: enum {
 
 // Initialize app state with defaults
 init_app_state :: proc() -> AppState {
-	return AppState {
-		commands = make([dynamic]SavedCommand),
-		next_id = 1,
+	state := AppState {
+		commands      = make([dynamic]SavedCommand),
+		next_id       = 1,
 		request_state = .Idle,
-		curl_editor = init_editor(),
+		curl_editor   = init_editor(),
 	}
+	return state
 }
 
 // Cleanup app state
@@ -109,4 +117,9 @@ destroy_app_state :: proc(state: ^AppState) {
 	}
 
 	destroy_editor(&state.curl_editor)
+
+	if state.worker_thread != nil {
+		thread.terminate(state.worker_thread, 1)
+		thread.destroy(state.worker_thread)
+	}
 }
