@@ -107,3 +107,55 @@ test_tokenize_multiline_backslash :: proc(t: ^testing.T) {
 	testing.expect(t, found_newline, "Should find newline")
 	testing.expect(t, found_url, "Should find URL on second line")
 }
+
+// Mock measure function for testing
+mock_measure :: proc(text: string) -> f32 {
+	return f32(len(text)) * 100.0 // Scaled up to avoid precision issues
+}
+
+@(test)
+test_format_display_lines_wrapping :: proc(t: ^testing.T) {
+	input := "curl https://very-long-url.com/resource"
+	tokens, _ := tokenize_curl(input)
+	defer delete(tokens)
+
+	// "curl " -> 5 chars * 100 = 500 width
+	// URL -> 33 chars * 100 = 3300 width
+	// Max width -> 1000 (10 chars space)
+
+	// Line 1: "curl " (500 width) + next needs space?
+	// Available: 1000 - 500 = 500.
+	// URL chunk needs to fit in 500.
+	// URL: "https" (5 chars) -> 500. Fits?
+	// So "curl https" fits on line 1?
+
+	// Wait, format_display_lines logic for splitting requires:
+	// If fits entirely, append.
+
+	// Token "https://..." is 3300 width.
+	// 500 remaining. Can it split?
+	// Yes, 5 chars fit.
+	// So "https" fits.
+	// Line 1: "curl https"
+	// Remainder: ://very-long-url.com/resource
+
+	// Line 2: Indent "     " (500 width)
+	// Available: 1000 - 500 = 500.
+	// 5 chars fit. "://ve"
+
+	// And so on.
+
+	// Let's test simply that it wraps.
+
+	lines := format_display_lines(input, tokens[:], 1000.0, mock_measure)
+	defer free_display_lines(&lines)
+
+	// Check we have multiple lines
+	testing.expect(t, len(lines) > 2, "Should wrap into multiple lines")
+
+	// First line should have 2 tokens: "curl " and part of URL "https"
+	if len(lines) > 0 {
+		l1 := lines[0]
+		testing.expect_value(t, len(l1.tokens), 2)
+	}
+}

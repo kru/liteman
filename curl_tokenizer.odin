@@ -279,6 +279,8 @@ DisplayLine :: struct {
 format_display_lines :: proc(
 	input: string,
 	tokens: []Token,
+	max_width: f32 = 0, // 0 means no wrapping
+	measure_fn: proc(text: string) -> f32 = nil,
 	allocator := context.allocator,
 ) -> [dynamic]DisplayLine {
 	lines := make([dynamic]DisplayLine, allocator)
@@ -293,7 +295,15 @@ format_display_lines :: proc(
 		indent = 0,
 	}
 
+	current_line_width: f32 = 0
 	is_first_line := true
+
+	// Default indent width (5 spaces approx? or 0)
+	// We'll calculate indent width if measure_fn is present
+	indent_width: f32 = 0
+	if measure_fn != nil {
+		indent_width = measure_fn("     ") // 5 spaces indent for wrapped lines
+	}
 
 	for i := 0; i < len(tokens); i += 1 {
 		token := tokens[i]
@@ -307,17 +317,167 @@ format_display_lines :: proc(
 				tokens = make([dynamic]Token, allocator),
 				indent = 0,
 			}
+			current_line_width = 0
 			is_first_line = true
 			continue
 		}
-
 
 		// Skip whitespace at the start of a line
 		if token.type == .Whitespace && len(current_line.tokens) == 0 {
 			continue
 		}
 
-		append(&current_line.tokens, token)
+		// If no wrapping needed or no measurement function
+		if max_width <= 0 || measure_fn == nil {
+			append(&current_line.tokens, token)
+			is_first_line = false
+			continue
+		}
+
+		// Calculate token width
+		token_text := input[token.start:token.end]
+		token_width := measure_fn(token_text)
+
+		// Check if it fits
+		if current_line_width + token_width <= max_width {
+			append(&current_line.tokens, token)
+			current_line_width += token_width
+			is_first_line = false
+			continue
+		}
+
+		// It doesn't fit
+		// Case 1: Fits on a new line?
+		// But if we are already at start of line, we MUST split it (Case 2)
+		if len(current_line.tokens) > 0 && token_width <= max_width - indent_width {
+			// Wrap to new line
+			append(&lines, current_line)
+			current_line = DisplayLine {
+				tokens = make([dynamic]Token, allocator),
+				indent = 5, // Continuation indent
+			}
+			current_line_width = indent_width
+
+			append(&current_line.tokens, token)
+			current_line_width += token_width
+			is_first_line = false
+			continue
+		}
+
+		// Case 2: Must split (Soft Wrap)
+		// It's either too long for a full line, or too long for the remainder of this line AND we want to fill the remainder first?
+		// Actually, if it fits on a new line (and we are not at start), we usually prefer wrapping the whole token.
+		// So the check `token_width <= max_width - indent_width` above handles "move to next line".
+		// If we are here, it means `token_width > max_width - indent_width` (if new line) OR we are at start and it's > max_width.
+		// Wait, if we are mid-line, and it doesn't fit remainder, BUT it fits new line, we wrapped above.
+		// So if we fall through here, it means it is TOO BIG even for a new line (or we are trying to fill the gap strictly?)
+		// User asked for soft wrap of "very long URL".
+
+		// If we are mid-line and it doesn't fit, but it WOULD fit on next line? Handled above.
+		// So here we handle:
+		// 1. It is too big for ANY line.
+		// 2. It is too big for remainder, AND too big for next line?
+
+		// Actually, standard behavior:
+		// If fits next line: wrap.
+		// If too big for next line: fill current line, then wrap? OR wrap to start and then split?
+		// Typically wrap to start of next line to keep token together as much as possible, THEN split.
+
+		if len(current_line.tokens) > 0 {
+			// Wrap to new line first to give it max space
+			append(&lines, current_line)
+			current_line = DisplayLine {
+				tokens = make([dynamic]Token, allocator),
+				indent = 5,
+			}
+			current_line_width = indent_width
+		}
+
+		// Now split the token across lines
+		// We are at start of a line (with indent)
+
+		remaining_token := token
+
+		for {
+			// Measure how much fits
+			// Ideally we binary search or char-by-char measure?
+			// For simplicity and correctness with variable width fonts: char-by-char linear scan.
+
+			available_width := max_width - current_line_width
+			if available_width <= 0 {available_width = 0} 	// Should not happen if indented properly
+
+			fitting_end := remaining_token.start
+			current_width: f32 = 0
+			found_split := false
+
+			token_content := input[remaining_token.start:remaining_token.end]
+
+			for c_idx := 0; c_idx < len(token_content); c_idx += 1 {
+				// Note: assuming ASCII/single-byte for simplicity of indexing, but measure handles string
+				// If UTF-8, need to advance properly.
+				// Since we iterate index, let's treat it carefully.
+				// Actually `token_content` is string.
+				// We need to measure char by char? expensive?
+				// Better: measure accumulated string.
+
+				// Optimization: measure just the char and add? (kerning might be off but maybe ok)
+				// Or measure substring 0..i
+
+				// Let's accept some perf verify cost for correctness.
+				// We need to find the split index.
+
+				// Simple approach:
+				// Advance byte (or rune), measure.
+				// If > available, stop.
+
+				// Let's assume input is valid string.
+				char_str := token_content[c_idx:c_idx + 1] // Single byte approximation
+				// TODO: Proper UTF8 iteration if needed.
+
+				char_w := measure_fn(char_str)
+				if current_width + char_w > available_width {
+					// Split here
+					fitting_end = remaining_token.start + c_idx
+					found_split = true
+					break
+				}
+				current_width += char_w
+			}
+
+			if !found_split {
+				// Fits entirely
+				append(&current_line.tokens, remaining_token)
+				current_line_width += current_width // approximate or remeasure?
+				// Remeasure total for accuracy
+				// current_line_width += measure_fn(input[remaining_token.start:remaining_token.end])
+				break
+			} else {
+				// Make sure we advance at least 1 char to avoid infinite loop if width is too small
+				if fitting_end == remaining_token.start {
+					fitting_end += 1
+				}
+
+				// Append fitting part
+				split_token := remaining_token
+				split_token.end = fitting_end
+				append(&current_line.tokens, split_token)
+
+				// Start new line
+				append(&lines, current_line)
+				current_line = DisplayLine {
+					tokens = make([dynamic]Token, allocator),
+					indent = 5,
+				}
+				current_line_width = indent_width
+
+				// Update remaining
+				remaining_token.start = fitting_end
+				if remaining_token.start >= remaining_token.end {
+					break
+				}
+			}
+		}
+
 		is_first_line = false
 	}
 

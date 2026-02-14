@@ -1047,6 +1047,8 @@ main_content_component :: proc() {
 					display_lines := format_display_lines(
 						processed_text,
 						tokens[:],
+						input_width - 24,
+						measure_text_for_wrap,
 						context.temp_allocator,
 					)
 
@@ -1489,6 +1491,11 @@ calculate_text_width :: proc(text: []u8, length: int, font_size: u16) -> f32 {
 	return width // No extra scaling, assuming 1:1 if we scaled correctly
 }
 
+// Helper for wrapping measurement
+measure_text_for_wrap :: proc(text: string) -> f32 {
+	return calculate_text_width(transmute([]u8)text, len(text), 18)
+}
+
 
 // Helper to get glyph width
 // Helper to get glyph width
@@ -1525,7 +1532,13 @@ calculate_cursor_from_click :: proc(
 	// We strictly use the display lines for hit testing
 	text_str := string(text[:length])
 	tokens, processed_text := tokenize_curl(text_str, context.temp_allocator)
-	display_lines := format_display_lines(processed_text, tokens[:], context.temp_allocator)
+	display_lines := format_display_lines(
+		processed_text,
+		tokens[:],
+		container_width,
+		measure_text_for_wrap,
+		context.temp_allocator,
+	)
 
 	current_y: f32 = 0
 
@@ -1609,7 +1622,13 @@ calculate_wrapped_position :: proc(
 	// Use tokenizer layout
 	text_str := string(text)
 	tokens, processed_text := tokenize_curl(text_str, context.temp_allocator)
-	display_lines := format_display_lines(processed_text, tokens[:], context.temp_allocator)
+	display_lines := format_display_lines(
+		processed_text,
+		tokens[:],
+		container_width,
+		measure_text_for_wrap,
+		context.temp_allocator,
+	)
 
 	// Map raw target index to processed index -> 1:1 mapping now
 	target_processed := target_index
