@@ -52,10 +52,8 @@ FONT_ID_BODY_12 :: 10
 FONT_ID_BODY_18 :: 11
 FONT_ID_BODY_20 :: 12
 
-Raylib_Font :: struct {
-	fontId: u16,
-	font:   raylib.Font,
-}
+g_font: raylib.Font
+
 
 // App state
 app_state: AppState
@@ -74,19 +72,8 @@ clay_color_to_rl_color :: proc(color: clay.Color) -> raylib.Color {
 	return {u8(color.r), u8(color.g), u8(color.b), u8(color.a)}
 }
 
-load_font :: proc(fontId: u16, fontSize: u16, path: cstring) {
-	assign_at(
-		&raylib_fonts,
-		fontId,
-		Raylib_Font {
-			font = raylib.LoadFontEx(path, cast(i32)fontSize * 2, nil, 0),
-			fontId = cast(u16)fontId,
-		},
-	)
-	raylib.SetTextureFilter(raylib_fonts[fontId].font.texture, raylib.TextureFilter.TRILINEAR)
-}
+// raylib_fonts removed
 
-raylib_fonts := [dynamic]Raylib_Font{}
 
 draw_arc :: proc(
 	x, y: f32,
@@ -126,7 +113,8 @@ measure_text :: proc "c" (
 ) -> clay.Dimensions {
 	line_width: f32 = 0
 
-	font := raylib_fonts[config.fontId].font
+	font := g_font
+	scale_factor := f32(config.fontSize) / f32(font.baseSize)
 
 	for i in 0 ..< text.length {
 		glyph_index := text.chars[i] - 32
@@ -134,9 +122,9 @@ measure_text :: proc "c" (
 		glyph := font.glyphs[glyph_index]
 
 		if glyph.advanceX != 0 {
-			line_width += f32(glyph.advanceX)
+			line_width += f32(glyph.advanceX) * scale_factor
 		} else {
-			line_width += font.recs[glyph_index].width + f32(glyph.offsetX)
+			line_width += (font.recs[glyph_index].width + f32(glyph.offsetX)) * scale_factor
 		}
 	}
 
@@ -535,13 +523,24 @@ render_command_node :: proc(commands: ^[dynamic]SavedCommand, cmd_idx: int, dept
 					}
 				}
 			} else {
-				// Render name
-				clay.TextDynamic(
-					cmd.name,
-					clay.TextConfig(
-						{textColor = COLOR_TEXT, fontSize = 18, fontId = FONT_ID_BODY_18},
-					),
-				)
+				// Render name - wrapped in clipped container
+				if clay.UI()(
+				{
+					id = clay.ID("CmdName", cmd.id),
+					layout = {
+						sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
+						childAlignment = {y = .Center},
+					},
+					clip = {horizontal = true},
+				},
+				) {
+					clay.TextDynamic(
+						cmd.name,
+						clay.TextConfig(
+							{textColor = COLOR_TEXT, fontSize = 18, fontId = FONT_ID_BODY_18},
+						),
+					)
+				}
 			}
 
 			// Edit/Delete buttons (same as commands)
@@ -1465,10 +1464,12 @@ create_layout :: proc() -> clay.ClayArray(clay.RenderCommand) {
 }
 
 // Calculate text width for cursor positioning
-calculate_text_width :: proc(text: []u8, length: int, font_id: u16) -> f32 {
+// Calculate text width for cursor positioning
+calculate_text_width :: proc(text: []u8, length: int, font_size: u16) -> f32 {
 	if length <= 0 {return 0}
 
-	font := raylib_fonts[font_id].font
+	font := g_font
+	scale_factor := f32(font_size) / f32(font.baseSize)
 	width: f32 = 0
 
 	for i in 0 ..< length {
@@ -1478,27 +1479,30 @@ calculate_text_width :: proc(text: []u8, length: int, font_id: u16) -> f32 {
 		glyph := font.glyphs[glyph_index]
 
 		if glyph.advanceX != 0 {
-			width += f32(glyph.advanceX)
+			width += f32(glyph.advanceX) * scale_factor
 		} else {
-			width += font.recs[glyph_index].width + f32(glyph.offsetX)
+			width += (font.recs[glyph_index].width + f32(glyph.offsetX)) * scale_factor
 		}
 	}
 
-	return width / 2 // Font is loaded at 2x scale
+	return width // No extra scaling, assuming 1:1 if we scaled correctly
 }
 
+
 // Helper to get glyph width
-get_glyph_width :: proc(font: raylib.Font, char: u8) -> f32 {
+// Helper to get glyph width
+get_glyph_width :: proc(font: raylib.Font, char: u8, scale_factor: f32) -> f32 {
 	if char < 32 {return 0}
 	glyph_index := char - 32
 	glyph := font.glyphs[glyph_index]
 
 	if glyph.advanceX != 0 {
-		return f32(glyph.advanceX) / 2
+		return f32(glyph.advanceX) * scale_factor
 	} else {
-		return (font.recs[glyph_index].width + f32(glyph.offsetX)) / 2
+		return (font.recs[glyph_index].width + f32(glyph.offsetX)) * scale_factor
 	}
 }
+
 
 // Calculate cursor position from click X,Y coordinates
 calculate_cursor_from_click :: proc(
@@ -1512,8 +1516,10 @@ calculate_cursor_from_click :: proc(
 ) -> int {
 	if length <= 0 {return 0}
 
-	font := raylib_fonts[font_id].font
+	font := g_font
+	scale_factor := f32(font_size) / f32(font.baseSize)
 	line_height := f32(font_size)
+
 
 	// We strictly use the display lines for hit testing
 	text_str := string(text[:length])
@@ -1539,7 +1545,8 @@ calculate_cursor_from_click :: proc(
 
 	// 2. Find the Char in Line
 	line := display_lines[target_line_idx]
-	current_x: f32 = f32(line.indent) * get_glyph_width(font, ' ') // Start with indentation
+	current_x: f32 = f32(line.indent) * get_glyph_width(font, ' ', scale_factor) // Start with indentation
+
 
 	// If clicked before indentation
 	if click_x < current_x {
@@ -1558,7 +1565,8 @@ calculate_cursor_from_click :: proc(
 
 		for i := 0; i < len(token_text); i += 1 {
 			char := token_text[i]
-			char_width := get_glyph_width(font, u8(char))
+			char_width := get_glyph_width(font, u8(char), scale_factor)
+
 
 			// Center hit test
 			if click_x < current_x + char_width { 	// Hit this char.
@@ -1605,14 +1613,17 @@ calculate_wrapped_position :: proc(
 	// Map raw target index to processed index -> 1:1 mapping now
 	target_processed := target_index
 
-	font := raylib_fonts[font_id].font
+	font := g_font
+	scale_factor := f32(font_size) / f32(font.baseSize)
 	line_height := f32(font_size)
+
 
 	current_y: f32 = 0
 
 	// Find where this index falls
 	for line in display_lines {
-		current_x := f32(line.indent) * get_glyph_width(font, ' ')
+		current_x := f32(line.indent) * get_glyph_width(font, ' ', scale_factor)
+
 
 		for token in line.tokens {
 			token_len := token.end - token.start
@@ -1624,16 +1635,18 @@ calculate_wrapped_position :: proc(
 				token_text := processed_text[token.start:token.end]
 
 				for i := 0; i < offset; i += 1 {
-					current_x += get_glyph_width(font, u8(token_text[i]))
+					current_x += get_glyph_width(font, u8(token_text[i]), scale_factor)
 				}
+
 				return current_x, current_y
 			}
 
 			// Advance X by full token width
 			token_text := processed_text[token.start:token.end]
 			for char in token_text {
-				current_x += get_glyph_width(font, u8(char))
+				current_x += get_glyph_width(font, u8(char), scale_factor)
 			}
+
 		}
 
 		// If target is exactly at the end of this line's content (and not found in tokens above)
@@ -1657,14 +1670,15 @@ calculate_wrapped_position :: proc(
 	if len(display_lines) > 0 {
 		// Actually current_x/y would be at start of next line loop if we exited.
 		last_line := display_lines[len(display_lines) - 1]
-		end_x: f32 = f32(last_line.indent) * get_glyph_width(font, ' ')
+		end_x: f32 = f32(last_line.indent) * get_glyph_width(font, ' ', scale_factor)
 		// Add width of all tokens
 		for token in last_line.tokens {
 			token_text := processed_text[token.start:token.end]
 			for char in token_text {
-				end_x += get_glyph_width(font, u8(char))
+				end_x += get_glyph_width(font, u8(char), scale_factor)
 			}
 		}
+
 		return end_x, f32(len(display_lines) - 1) * line_height
 	}
 
@@ -1680,7 +1694,9 @@ calculate_linear_position :: proc(
 ) -> f32 {
 	if target_index <= 0 {return 0}
 
-	font := raylib_fonts[font_id].font
+	font := g_font
+	scale_factor := f32(font_size) / f32(font.baseSize)
+
 
 	// Convert bytes to string for iteration (assuming UTF-8 safe or similar)
 	text_str := string(text)
@@ -1699,8 +1715,9 @@ calculate_linear_position :: proc(
 	if actual_target > 0 {
 		str_slice := text_str[:actual_target]
 		for char in str_slice {
-			current_x += get_glyph_width(font, u8(char))
+			current_x += get_glyph_width(font, u8(char), scale_factor)
 		}
+
 	}
 
 	return current_x
@@ -1716,14 +1733,18 @@ calculate_linear_cursor_from_click :: proc(
 ) -> int {
 	if length <= 0 {return 0}
 
-	font := raylib_fonts[font_id].font
+	font := g_font
+	scale_factor := f32(font_size) / f32(font.baseSize)
+
 	text_str := string(text[:length])
+
 
 	current_x: f32 = 0
 
 	for i := 0; i < len(text_str); i += 1 {
 		char := text_str[i]
-		char_width := get_glyph_width(font, u8(char))
+		char_width := get_glyph_width(font, u8(char), scale_factor)
+
 
 		// If click is within the left half of this char, return this index (cursor before char)
 		// If click is within right half, continue (effectively checking next boundary)
@@ -2169,11 +2190,8 @@ deprecated_handle_interactions :: proc() {
 
 		if input_width > 0 {
 			// Calculate text width before cursor
-			cursor_x := calculate_text_width(
-				app_state.name_input[:],
-				app_state.name_cursor,
-				FONT_ID_BODY_18,
-			)
+			cursor_x := calculate_text_width(app_state.name_input[:], app_state.name_cursor, 18)
+
 
 			// Add some padding/margin for cursor visibility
 			margin: f32 = 10
@@ -2444,13 +2462,12 @@ clay_raylib_render :: proc(
 
 			cstr_text := strings.clone_to_cstring(text, allocator)
 
-			font := raylib_fonts[config.fontId].font
 			raylib.DrawTextEx(
-				font,
+				g_font,
 				cstr_text,
 				{bounds.x, bounds.y},
 				f32(config.fontSize),
-				f32(config.letterSpacing),
+				f32(config.letterSpacing), // Consider if letterSpacing needs scaling too? Usually pixels.
 				clay_color_to_rl_color(config.textColor),
 			)
 		case .Image:
@@ -2614,11 +2631,13 @@ main :: proc() {
 		}
 	}
 
-	// Try to load system font, fallback to bundled font
-	font_path: cstring = "resources/Quicksand.ttf"
+	// Try to load system font, fallback to default if not found
+	// We load at a large size (64) to ensure high quality when scaled down
+	font_size: i32 = 64
 
 	candidates := get_system_fonts()
 	found_system_font := false
+	font_path: cstring = "" // No bundled fallback
 
 	for candidate in candidates {
 		candidate_cstr := strings.clone_to_cstring(candidate, context.temp_allocator)
@@ -2630,19 +2649,16 @@ main :: proc() {
 		}
 	}
 
-	if !found_system_font {
-		raylib.TraceLog(.INFO, "FONT: System font not found, using bundled font: %s", font_path)
+	if found_system_font {
+		g_font = raylib.LoadFontEx(font_path, font_size, nil, 0)
+	} else {
+		raylib.TraceLog(.WARNING, "FONT: System font not found, using default Raylib font")
+		g_font = raylib.GetFontDefault()
 	}
 
-	load_font(FONT_ID_BODY_36, 36, font_path)
-	load_font(FONT_ID_BODY_30, 30, font_path)
-	load_font(FONT_ID_BODY_28, 28, font_path)
-	load_font(FONT_ID_BODY_24, 24, font_path)
-	load_font(FONT_ID_BODY_20, 20, font_path)
-	load_font(FONT_ID_BODY_18, 18, font_path)
-	load_font(FONT_ID_BODY_16, 16, font_path)
-	load_font(FONT_ID_BODY_14, 14, font_path)
-	load_font(FONT_ID_BODY_12, 12, font_path)
+	// Set bilinear filter for smoother scaling
+	raylib.SetTextureFilter(g_font.texture, raylib.TextureFilter.BILINEAR)
+
 
 	allocator := context.temp_allocator
 

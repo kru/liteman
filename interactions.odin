@@ -367,7 +367,7 @@ handle_interactions :: proc() {
 			cursor_x := calculate_text_width(
 				app_state.name_input[:],
 				app_state.name_cursor,
-				FONT_ID_BODY_18,
+				18, // Font size
 			)
 
 			// Add some padding/margin for cursor visibility
