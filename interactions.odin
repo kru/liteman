@@ -267,6 +267,71 @@ handle_interactions :: proc() {
 		}
 	}
 
+	// Check JSON Body selection interaction
+	res := get_active_result(&app_state)
+	if res.request_state == .Success && res.active_tab == .Body {
+		scroll_id := clay.ID("ResponseContent")
+		if clay.PointerOver(scroll_id) {
+			bounds_data := clay.GetElementData(scroll_id)
+			if bounds_data.found {
+				// We need the scroll container data to know how far we've scrolled down
+				response_scroll := clay.GetScrollContainerData(scroll_id)
+				scroll_y: f32 = 0
+				if response_scroll.found && response_scroll.scrollPosition != nil {
+					scroll_y = response_scroll.scrollPosition^.y
+				}
+
+				mouse_pos := raylib.GetMousePosition()
+
+				// 12px is the padding of ResponseContent layout
+				click_x := mouse_pos.x - bounds_data.boundingBox.x - 12
+				click_y := mouse_pos.y - bounds_data.boundingBox.y - 12 - scroll_y // adjust for scroll
+
+				// Compute absolute character index based on virtual layout
+				line_height: f32 = 24.0
+				line_idx := int(click_y / line_height)
+
+				// Replicate line splitting logic
+				lines := strings.split(res.body, "\n")
+				defer delete(lines)
+
+				new_cursor := 0
+
+				if line_idx >= 0 && line_idx < len(lines) {
+					// Add lengths of previous lines. Must exactly match renderer's +1 for \n.
+					for i in 0 ..< line_idx {
+						new_cursor += len(lines[i]) + 1
+					}
+
+					target_line := lines[line_idx]
+
+					// Compute cursor within the specific line
+					line_cursor := calculate_linear_cursor_from_click(
+						transmute([]u8)target_line,
+						len(target_line),
+						click_x,
+						FONT_ID_BODY_18,
+						18,
+					)
+					new_cursor += line_cursor
+				} else if line_idx >= len(lines) {
+					// Clicked below the text
+					new_cursor = len(res.body)
+				}
+
+				// If no selection exists or we are starting a raw click
+				if raylib.IsMouseButtonPressed(.LEFT) {
+					focused_input = .ResponseBody
+					res.body_cursor = new_cursor
+					res.body_sel_anchor = new_cursor
+				} else if raylib.IsMouseButtonDown(.LEFT) && focused_input == .ResponseBody {
+					// While dragging, just update cursor, leaving anchor where it started
+					res.body_cursor = new_cursor
+				}
+			}
+		}
+	}
+
 	// Check Run button click
 	if clay.PointerOver(clay.ID("RunButton")) {
 		if raylib.IsMouseButtonPressed(.LEFT) {
@@ -391,11 +456,49 @@ handle_interactions :: proc() {
 		if raylib.IsKeyPressed(.ENTER) {
 			save_editing_command()
 		}
+
+	case .ResponseBody:
+		// Handle Ctrl+C copy of selection
+		is_ctrl_down :=
+			raylib.IsKeyDown(.LEFT_CONTROL) ||
+			raylib.IsKeyDown(.RIGHT_CONTROL) ||
+			raylib.IsKeyDown(.LEFT_SUPER) ||
+			raylib.IsKeyDown(.RIGHT_SUPER)
+
+		if is_ctrl_down && raylib.IsKeyPressed(.C) {
+			res := get_active_result(&app_state)
+			if anchor, ok := res.body_sel_anchor.?; ok && anchor != res.body_cursor {
+				start_idx := min(anchor, res.body_cursor)
+				end_idx := max(anchor, res.body_cursor)
+
+				// Defensive clamping
+				start_idx = clamp(start_idx, 0, len(res.body))
+				end_idx = clamp(end_idx, 0, len(res.body))
+
+				if start_idx < end_idx {
+					selected_text := res.body[start_idx:end_idx]
+					if len(selected_text) > 0 {
+						cstr := strings.clone_to_cstring(selected_text)
+						defer delete(cstr)
+						raylib.SetClipboardText(cstr)
+					}
+				}
+			}
+		}
+
+		// Handle select all
+		if is_ctrl_down && raylib.IsKeyPressed(.A) {
+			res := get_active_result(&app_state)
+			res.body_sel_anchor = 0
+			res.body_cursor = len(res.body)
+		}
 	}
 
 	// Click outside to unfocus
 	if raylib.IsMouseButtonPressed(.LEFT) {
-		if !clay.PointerOver(clay.ID("SearchBox")) && !clay.PointerOver(clay.ID("CurlInputBox")) {
+		if !clay.PointerOver(clay.ID("SearchBox")) &&
+		   !clay.PointerOver(clay.ID("CurlInputBox")) &&
+		   !clay.PointerOver(clay.ID("ResponseContent")) {
 			// Don't unfocus if focused on NameInput (it has its own save/cancel logic usually, but here checking bounds helps)
 			if focused_input != .NameInput {
 				focused_input = .None

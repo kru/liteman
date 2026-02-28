@@ -22,12 +22,16 @@ ResponseTab :: enum {
 }
 
 RequestResult :: struct {
-	headers:       string,
-	body:          string,
-	status_code:   int,
-	error_message: string,
-	request_state: RequestState,
-	active_tab:    ResponseTab,
+	headers:         string,
+	body:            string,
+	status_code:     int,
+	error_message:   string,
+	request_state:   RequestState,
+	active_tab:      ResponseTab,
+
+	// Selection state
+	body_cursor:     int,
+	body_sel_anchor: Maybe(int),
 }
 
 WorkerTaskResult :: struct {

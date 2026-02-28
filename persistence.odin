@@ -66,7 +66,42 @@ to_json_struct :: proc(cmd: SavedCommand) -> SavedCommandJson {
 }
 
 // Convert JSON struct to core struct (recursive)
-from_json_struct :: proc(jcmd: SavedCommandJson) -> SavedCommand {
+from_json_struct :: proc(
+	jcmd: SavedCommandJson,
+) -> // Helper to free JSON struct
+
+	// Strings in JSON struct might be slices into the original data if using strict unmarshal,
+	// but here we are constructing them.
+	// Since we use the default allocator for `to_json_struct`'s dynamic array, we should free it.
+	// But strings are just copies/refs.
+	// Actually `json.marshal` handles the allocation for the output string.
+	// `to_json_struct` allocates the dynamic array.
+
+
+	// Save commands to JSON file
+
+
+	// Marshal with pretty printing (indentation)
+
+
+	// Ensure config directory exists only when using default path
+
+
+	// Helper to free JSON struct deeply (including strings, for unmarshalled data)
+
+
+	// Load commands from JSON file
+
+
+	// File doesn't exist yet, return empty list
+
+
+	// Check if file is empty
+
+
+	// Fallback for empty or corrupt file - return empty list logic handled above
+	// If it fails, maybe legacy format?
+	SavedCommand {// For now we assume fresh start as requested.
 	cmd := SavedCommand {
 		id       = jcmd.id,
 		type     = jcmd.type,
@@ -85,21 +120,17 @@ from_json_struct :: proc(jcmd: SavedCommandJson) -> SavedCommand {
 	return cmd
 }
 
-// Helper to free JSON struct
+
 destroy_json_struct :: proc(jcmd: SavedCommandJson) {
-	// Strings in JSON struct might be slices into the original data if using strict unmarshal,
-	// but here we are constructing them.
-	// Since we use the default allocator for `to_json_struct`'s dynamic array, we should free it.
-	// But strings are just copies/refs.
-	// Actually `json.marshal` handles the allocation for the output string.
-	// `to_json_struct` allocates the dynamic array.
+
+
 	for child in jcmd.children {
 		destroy_json_struct(child)
 	}
 	delete(jcmd.children)
 }
 
-// Save commands to JSON file
+
 save_commands :: proc(commands: []SavedCommand, file_path: string = "") -> bool {
 	json_commands := make([dynamic]SavedCommandJson, len(commands))
 	defer {
@@ -113,7 +144,7 @@ save_commands :: proc(commands: []SavedCommand, file_path: string = "") -> bool 
 		json_commands[i] = to_json_struct(cmd)
 	}
 
-	// Marshal with pretty printing (indentation)
+
 	opt := json.Marshal_Options {
 		pretty = true,
 	}
@@ -127,7 +158,7 @@ save_commands :: proc(commands: []SavedCommand, file_path: string = "") -> bool 
 
 	path_to_use := file_path
 	if path_to_use == "" {
-		// Ensure config directory exists only when using default path
+
 		config_dir := get_config_dir()
 		if config_dir != "." && !os.exists(config_dir) {
 			os.make_directory(config_dir)
@@ -138,7 +169,7 @@ save_commands :: proc(commands: []SavedCommand, file_path: string = "") -> bool 
 	return os.write_entire_file(path_to_use, data)
 }
 
-// Helper to free JSON struct deeply (including strings, for unmarshalled data)
+
 destroy_decoded_json_struct :: proc(jcmd: SavedCommandJson) {
 	delete(jcmd.name)
 	delete(jcmd.command)
@@ -148,7 +179,7 @@ destroy_decoded_json_struct :: proc(jcmd: SavedCommandJson) {
 	delete(jcmd.children)
 }
 
-// Load commands from JSON file
+
 load_commands :: proc(file_path: string = "") -> ([dynamic]SavedCommand, bool) {
 	commands := make([dynamic]SavedCommand)
 
@@ -159,12 +190,12 @@ load_commands :: proc(file_path: string = "") -> ([dynamic]SavedCommand, bool) {
 
 	data, ok := os.read_entire_file(path_to_use)
 	if !ok {
-		// File doesn't exist yet, return empty list
+
 		return commands, true
 	}
 	defer delete(data)
 
-	// Check if file is empty
+
 	if len(data) == 0 {
 		return commands, true
 	}
@@ -180,9 +211,8 @@ load_commands :: proc(file_path: string = "") -> ([dynamic]SavedCommand, bool) {
 	err := json.unmarshal(data, &json_commands)
 	if err != nil {
 		fmt.println("Error unmarshalling commands:", err)
-		// Fallback for empty or corrupt file - return empty list logic handled above
-		// If it fails, maybe legacy format?
-		// For now we assume fresh start as requested.
+
+
 		return commands, false
 	}
 

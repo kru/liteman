@@ -66,6 +66,7 @@ FocusedInput :: enum {
 	Search,
 	CurlInput,
 	NameInput,
+	ResponseBody,
 }
 
 focused_input: FocusedInput = .None
@@ -1808,7 +1809,7 @@ draw_text_cursor :: proc() {
 	scroll_offset_x: f32 = 0
 	sel_anchor: Maybe(int)
 
-	switch focused_input {
+	#partial switch focused_input {
 	case .Search:
 		element_id = clay.ID("SearchBox")
 		cursor_pos = app_state.search_cursor
@@ -2726,6 +2727,7 @@ main :: proc() {
 	// Initialize app state
 	app_state = init_app_state()
 	load_state_commands(&app_state)
+	// add_command_root(&app_state, "Test command", "curl http://mock.com")
 	defer destroy_app_state(&app_state)
 
 	for !raylib.WindowShouldClose() {
@@ -2834,9 +2836,89 @@ main :: proc() {
 	}
 }
 
+// Helper to render text with partial selection background
+render_selectable_text :: proc(
+	text: string,
+	color: clay.Color,
+	abs_start: int,
+	abs_end: int,
+	sel_start: int,
+	sel_end: int,
+) {
+	if len(text) == 0 {return}
+
+	// Check intersection
+	intersect_start := max(abs_start, sel_start)
+	intersect_end := min(abs_end, sel_end)
+
+	if intersect_start < intersect_end {
+		// There is an overlap! We need to split the string into 3 parts
+		left_len := intersect_start - abs_start
+		mid_len := intersect_end - intersect_start
+
+		// Part 1: Left unselected
+		if left_len > 0 {
+			if clay.UI()(
+			{layout = {sizing = {width = clay.SizingFit({}), height = clay.SizingFit({})}}},
+			) {
+				clay.TextDynamic(
+					text[:left_len],
+					clay.TextConfig({textColor = color, fontSize = 18, fontId = FONT_ID_BODY_18}),
+				)
+			}
+		}
+
+		// Part 2: Middle selected
+		if clay.UI()(
+		{
+			layout = {sizing = {width = clay.SizingFit({}), height = clay.SizingFit({})}},
+			backgroundColor = {80, 120, 180, 150},
+		},
+		) {
+			clay.TextDynamic(
+				text[left_len:left_len + mid_len],
+				clay.TextConfig({textColor = color, fontSize = 18, fontId = FONT_ID_BODY_18}),
+			)
+		}
+
+		// Part 3: Right unselected
+		if left_len + mid_len < len(text) {
+			if clay.UI()(
+			{layout = {sizing = {width = clay.SizingFit({}), height = clay.SizingFit({})}}},
+			) {
+				clay.TextDynamic(
+					text[left_len + mid_len:],
+					clay.TextConfig({textColor = color, fontSize = 18, fontId = FONT_ID_BODY_18}),
+				)
+			}
+		}
+	} else {
+		// No overlap
+		if clay.UI()(
+		{layout = {sizing = {width = clay.SizingFit({}), height = clay.SizingFit({})}}},
+		) {
+			clay.TextDynamic(
+				text,
+				clay.TextConfig({textColor = color, fontSize = 18, fontId = FONT_ID_BODY_18}),
+			)
+		}
+	}
+}
+
 // Basic syntax highlighting for JSON (with virtual scrolling)
 render_highlighted_json :: proc(json_str: string, container_height: f32, scroll_y: f32) {
 	if len(json_str) == 0 {return}
+
+	res := get_active_result(&app_state)
+	sel_start := 0
+	sel_end := 0
+	has_selection := false
+
+	if anchor, ok := res.body_sel_anchor.?; ok {
+		has_selection = true
+		sel_start = min(anchor, res.body_cursor)
+		sel_end = max(anchor, res.body_cursor)
+	}
 
 	// Colors
 	COLOR_KEY :: clay.Color{100, 180, 240, 255} // Blue
@@ -2872,6 +2954,13 @@ render_highlighted_json :: proc(json_str: string, container_height: f32, scroll_
 			},
 		},
 		) {}
+	}
+
+	// Track the absolute character index into json_str for selection highlighting
+	abs_char_idx := 0
+	// Fast forward absolute char index by summing lengths of skipped lines
+	for i in 0 ..< start_idx {
+		abs_char_idx += len(lines[i]) + 1 // +1 for '\n'
 	}
 
 	for line_idx := start_idx; line_idx < end_idx; line_idx += 1 {
@@ -2917,11 +3006,18 @@ render_highlighted_json :: proc(json_str: string, container_height: f32, scroll_
 
 						// Render string token
 						token := line[current_token_start:i + 1]
-						clay.TextDynamic(
+
+						// Selection highlight logic
+						token_abs_start := abs_char_idx + current_token_start
+						token_abs_end := abs_char_idx + i + 1
+
+						render_selectable_text(
 							token,
-							clay.TextConfig(
-								{textColor = color, fontSize = 18, fontId = FONT_ID_BODY_18},
-							),
+							color,
+							token_abs_start,
+							token_abs_end,
+							sel_start,
+							sel_end,
 						)
 
 						current_token_start = i + 1
@@ -2935,11 +3031,17 @@ render_highlighted_json :: proc(json_str: string, container_height: f32, scroll_
 					// Flush previous
 					if i > current_token_start {
 						token := line[current_token_start:i]
-						clay.TextDynamic(
+
+						token_abs_start := abs_char_idx + current_token_start
+						token_abs_end := abs_char_idx + i
+
+						render_selectable_text(
 							token,
-							clay.TextConfig(
-								{textColor = COLOR_PUNCT, fontSize = 18, fontId = FONT_ID_BODY_18},
-							),
+							COLOR_PUNCT,
+							token_abs_start,
+							token_abs_end,
+							sel_start,
+							sel_end,
 						)
 					}
 					current_token_start = i
@@ -2958,21 +3060,32 @@ render_highlighted_json :: proc(json_str: string, container_height: f32, scroll_
 							color = COLOR_PUNCT
 						}
 
-						clay.TextDynamic(
+						token_abs_start := abs_char_idx + current_token_start
+						token_abs_end := abs_char_idx + i
+
+						render_selectable_text(
 							token,
-							clay.TextConfig(
-								{textColor = color, fontSize = 18, fontId = FONT_ID_BODY_18},
-							),
+							color,
+							token_abs_start,
+							token_abs_end,
+							sel_start,
+							sel_end,
 						)
 					}
 
 					// Render punctuation
 					token := line[i:i + 1]
-					clay.TextDynamic(
+
+					token_abs_start := abs_char_idx + i
+					token_abs_end := abs_char_idx + i + 1
+
+					render_selectable_text(
 						token,
-						clay.TextConfig(
-							{textColor = COLOR_PUNCT, fontSize = 18, fontId = FONT_ID_BODY_18},
-						),
+						COLOR_PUNCT,
+						token_abs_start,
+						token_abs_end,
+						sel_start,
+						sel_end,
 					)
 
 					current_token_start = i + 1
@@ -2997,11 +3110,20 @@ render_highlighted_json :: proc(json_str: string, container_height: f32, scroll_
 					color = COLOR_PUNCT
 				}
 
-				clay.TextDynamic(
+				token_abs_start := abs_char_idx + current_token_start
+				token_abs_end := abs_char_idx + len(line)
+
+				render_selectable_text(
 					token,
-					clay.TextConfig({textColor = color, fontSize = 18, fontId = FONT_ID_BODY_18}),
+					color,
+					token_abs_start,
+					token_abs_end,
+					sel_start,
+					sel_end,
 				)
 			}
+
+			abs_char_idx += len(line) + 1 // Advance string index including trailing newline
 		}
 	}
 
