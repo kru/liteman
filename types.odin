@@ -9,20 +9,40 @@ CommandType :: enum {
 	Folder,
 }
 
-SavedCommand :: struct {
-	id:       u32,
-	type:     CommandType,
-	name:     string,
-	command:  string,
-	children: [dynamic]SavedCommand,
-	expanded: bool,
-}
-
 RequestState :: enum {
 	Idle,
 	Loading,
 	Success,
 	Error,
+}
+
+ResponseTab :: enum {
+	Body,
+	Headers,
+}
+
+RequestResult :: struct {
+	headers:       string,
+	body:          string,
+	status_code:   int,
+	error_message: string,
+	request_state: RequestState,
+	active_tab:    ResponseTab,
+}
+
+WorkerTaskResult :: struct {
+	command_id: Maybe(u32),
+	result:     CurlResult,
+}
+
+SavedCommand :: struct {
+	id:       u32,
+	type:     CommandType,
+	name:     string,
+	command:  string,
+	result:   RequestResult,
+	children: [dynamic]SavedCommand,
+	expanded: bool,
 }
 
 AppState :: struct {
@@ -49,13 +69,8 @@ AppState :: struct {
 	// Cursor blink timer
 	cursor_blink_timer:               f32,
 
-	// Response
-	response_headers:                 string,
-	response_body:                    string,
-	status_code:                      int,
-	request_state:                    RequestState,
-	error_message:                    string,
-	active_tab:                       ResponseTab,
+	// Unsaved command response
+	unsaved_result:                   RequestResult,
 
 	// Selection
 	selected_id:                      Maybe(u32),
@@ -78,43 +93,66 @@ AppState :: struct {
 
 	// Threading state
 	worker_thread:                    ^thread.Thread,
-	worker_result:                    Maybe(CurlResult),
+	worker_result:                    Maybe(WorkerTaskResult),
 	worker_mutex:                     sync.Mutex,
-}
-
-ResponseTab :: enum {
-	Body,
-	Headers,
 }
 
 // Initialize app state with defaults
 init_app_state :: proc() -> AppState {
 	state := AppState {
-		commands      = make([dynamic]SavedCommand),
-		next_id       = 1,
-		request_state = .Idle,
-		curl_editor   = init_editor(),
+		commands = make([dynamic]SavedCommand),
+		next_id = 1,
+		unsaved_result = RequestResult{request_state = .Idle},
+		curl_editor = init_editor(),
 	}
 	return state
 }
 
+// Cleanup request result
+destroy_request_result :: proc(result: ^RequestResult) {
+	if len(result.headers) > 0 {
+		delete(result.headers)
+		result.headers = ""
+	}
+	if len(result.body) > 0 {
+		delete(result.body)
+		result.body = ""
+	}
+	if len(result.error_message) > 0 {
+		delete(result.error_message)
+		result.error_message = ""
+	}
+}
+
+// Get the active request result
+get_active_result :: proc(state: ^AppState) -> ^RequestResult {
+	if selected_id, ok := state.selected_id.?; ok {
+		if cmd := find_command(state, selected_id); cmd != nil {
+			return &cmd.result
+		}
+	}
+	return &state.unsaved_result
+}
+
 // Cleanup app state
 destroy_app_state :: proc(state: ^AppState) {
-	for &cmd in state.commands {
+	destroy_command_recursive :: proc(cmd: ^SavedCommand) {
 		delete(cmd.name)
 		delete(cmd.command)
+		destroy_request_result(&cmd.result)
+		for &child in cmd.children {
+			destroy_command_recursive(&child)
+		}
+		delete(cmd.children)
+	}
+
+	for &cmd in state.commands {
+		destroy_command_recursive(&cmd)
 	}
 	delete(state.commands)
 
-	if len(state.response_headers) > 0 {
-		delete(state.response_headers)
-	}
-	if len(state.response_body) > 0 {
-		delete(state.response_body)
-	}
-	if len(state.error_message) > 0 {
-		delete(state.error_message)
-	}
+	destroy_request_result(&state.unsaved_result)
+
 
 	destroy_editor(&state.curl_editor)
 

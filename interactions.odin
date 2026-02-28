@@ -284,12 +284,14 @@ handle_interactions :: proc() {
 	// Check Tab clicks
 	if clay.PointerOver(clay.ID("TabBody")) {
 		if raylib.IsMouseButtonPressed(.LEFT) {
-			app_state.active_tab = .Body
+			res := get_active_result(&app_state)
+			res.active_tab = .Body
 		}
 	}
 	if clay.PointerOver(clay.ID("TabHeaders")) {
 		if raylib.IsMouseButtonPressed(.LEFT) {
-			app_state.active_tab = .Headers
+			res := get_active_result(&app_state)
+			res.active_tab = .Headers
 		}
 	}
 
@@ -297,10 +299,11 @@ handle_interactions :: proc() {
 	if clay.PointerOver(clay.ID("CopyButton")) {
 		if raylib.IsMouseButtonPressed(.LEFT) {
 			text_to_copy := ""
-			if app_state.active_tab == .Body {
-				text_to_copy = app_state.response_body
+			res := get_active_result(&app_state)
+			if res.active_tab == .Body {
+				text_to_copy = res.body
 			} else {
-				text_to_copy = app_state.response_headers
+				text_to_copy = res.headers
 			}
 
 			if len(text_to_copy) > 0 {

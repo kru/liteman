@@ -1145,11 +1145,12 @@ main_content_component :: proc() {
 						sizing = {width = clay.SizingFixed(90), height = clay.SizingFixed(32)},
 						childAlignment = {x = .Center, y = .Center},
 					},
-					backgroundColor = app_state.request_state == .Loading ? COLOR_TEXT_DIM : COLOR_ACCENT,
+					backgroundColor = get_active_result(&app_state).request_state == .Loading ? COLOR_TEXT_DIM : COLOR_ACCENT,
 					cornerRadius = {4, 4, 4, 4},
 				},
 				) {
-					run_text := app_state.request_state == .Loading ? "..." : "Run"
+					run_text :=
+						get_active_result(&app_state).request_state == .Loading ? "..." : "Run"
 					clay.TextDynamic(
 						run_text,
 						clay.TextConfig(
@@ -1196,15 +1197,15 @@ main_content_component :: proc() {
 				clay.TextConfig({textColor = COLOR_TEXT, fontSize = 24, fontId = FONT_ID_BODY_24}),
 			)
 
-			if app_state.request_state == .Success {
+			if get_active_result(&app_state).request_state == .Success {
 				status_color := COLOR_SUCCESS
-				if app_state.status_code >= 400 {
+				if get_active_result(&app_state).status_code >= 400 {
 					status_color = COLOR_ERROR
-				} else if app_state.status_code >= 300 {
+				} else if get_active_result(&app_state).status_code >= 300 {
 					status_color = COLOR_WARNING
 				}
 
-				status_text := fmt.tprintf("HTTP %d", app_state.status_code)
+				status_text := fmt.tprintf("HTTP %d", get_active_result(&app_state).status_code)
 				clay.TextDynamic(
 					status_text,
 					clay.TextConfig(
@@ -1226,7 +1227,8 @@ main_content_component :: proc() {
 		},
 		) {
 			// Body Tab
-			body_tab_color := app_state.active_tab == .Body ? COLOR_ACCENT : COLOR_PANEL
+			body_tab_color :=
+				get_active_result(&app_state).active_tab == .Body ? COLOR_ACCENT : COLOR_PANEL
 			if clay.UI()(
 			{
 				id = clay.ID("TabBody"),
@@ -1247,7 +1249,8 @@ main_content_component :: proc() {
 			}
 
 			// Headers Tab
-			headers_tab_color := app_state.active_tab == .Headers ? COLOR_ACCENT : COLOR_PANEL
+			headers_tab_color :=
+				get_active_result(&app_state).active_tab == .Headers ? COLOR_ACCENT : COLOR_PANEL
 			if clay.UI()(
 			{
 				id = clay.ID("TabHeaders"),
@@ -1271,11 +1274,13 @@ main_content_component :: proc() {
 			if clay.UI()({layout = {sizing = {width = clay.SizingGrow({})}}}) {}
 
 			// Copy Button (Context sensitive)
-			if app_state.request_state == .Success {
+			if get_active_result(&app_state).request_state == .Success {
 				show_copy := false
-				if app_state.active_tab == .Body && len(app_state.response_body) > 0 {
+				if get_active_result(&app_state).active_tab == .Body &&
+				   len(get_active_result(&app_state).body) > 0 {
 					show_copy = true
-				} else if app_state.active_tab == .Headers && len(app_state.response_headers) > 0 {
+				} else if get_active_result(&app_state).active_tab == .Headers &&
+				   len(get_active_result(&app_state).headers) > 0 {
 					show_copy = true
 				}
 
@@ -1334,7 +1339,7 @@ main_content_component :: proc() {
 				clip = {vertical = true, horizontal = true, childOffset = scroll_offset},
 			},
 			) {
-				switch app_state.request_state {
+				switch get_active_result(&app_state).request_state {
 				case .Idle:
 					clay.Text(
 						"Run a cURL command to see the response.",
@@ -1350,9 +1355,13 @@ main_content_component :: proc() {
 						),
 					)
 				case .Success:
-					if app_state.active_tab == .Body {
-						if len(app_state.response_body) > 0 {
-							render_highlighted_json(app_state.response_body)
+					if get_active_result(&app_state).active_tab == .Body {
+						if len(get_active_result(&app_state).body) > 0 {
+							render_highlighted_json(
+								get_active_result(&app_state).body,
+								response_scroll.scrollContainerDimensions.height,
+								scroll_offset.y,
+							)
 						} else {
 							clay.Text(
 								"No body returned.",
@@ -1366,9 +1375,9 @@ main_content_component :: proc() {
 							)
 						}
 					} else {
-						if len(app_state.response_headers) > 0 {
+						if len(get_active_result(&app_state).headers) > 0 {
 							clay.TextDynamic(
-								app_state.response_headers,
+								get_active_result(&app_state).headers,
 								clay.TextConfig(
 									{
 										textColor = COLOR_TEXT_DIM,
@@ -1392,7 +1401,7 @@ main_content_component :: proc() {
 					}
 				case .Error:
 					clay.TextDynamic(
-						app_state.error_message,
+						get_active_result(&app_state).error_message,
 						clay.TextConfig(
 							{textColor = COLOR_ERROR, fontSize = 18, fontId = FONT_ID_BODY_18},
 						),
@@ -2029,7 +2038,7 @@ deprecated_handle_interactions :: proc() {
 	// Check Run button click
 	if clay.PointerOver(clay.ID("RunButton")) {
 		if raylib.IsMouseButtonPressed(.LEFT) {
-			if app_state.request_state != .Loading {
+			if get_active_result(&app_state).request_state != .Loading {
 				execute_curl_command()
 			}
 		}
@@ -2045,12 +2054,12 @@ deprecated_handle_interactions :: proc() {
 	// Check Tab clicks
 	if clay.PointerOver(clay.ID("TabBody")) {
 		if raylib.IsMouseButtonPressed(.LEFT) {
-			app_state.active_tab = .Body
+			get_active_result(&app_state).active_tab = .Body
 		}
 	}
 	if clay.PointerOver(clay.ID("TabHeaders")) {
 		if raylib.IsMouseButtonPressed(.LEFT) {
-			app_state.active_tab = .Headers
+			get_active_result(&app_state).active_tab = .Headers
 		}
 	}
 
@@ -2058,10 +2067,10 @@ deprecated_handle_interactions :: proc() {
 	if clay.PointerOver(clay.ID("CopyButton")) {
 		if raylib.IsMouseButtonPressed(.LEFT) {
 			text_to_copy := ""
-			if app_state.active_tab == .Body {
-				text_to_copy = app_state.response_body
+			if get_active_result(&app_state).active_tab == .Body {
+				text_to_copy = get_active_result(&app_state).body
 			} else {
-				text_to_copy = app_state.response_headers
+				text_to_copy = get_active_result(&app_state).headers
 			}
 
 			if len(text_to_copy) > 0 {
@@ -2398,57 +2407,69 @@ save_editing_command :: proc() {
 	}
 }
 
+WorkerTaskInput :: struct {
+	command_id: Maybe(u32),
+	command:    string,
+}
+
 // Execute the current cURL command
 execute_curl_command :: proc() {
 	if len(app_state.curl_editor.text) == 0 {return}
 
+	curr_id := app_state.selected_id
+	res := get_active_result(&app_state)
+
 	// Clear previous response
-	// Clear previous response
-	if len(app_state.response_headers) > 0 {
-		delete(app_state.response_headers)
-		app_state.response_headers = ""
+	if len(res.headers) > 0 {
+		delete(res.headers)
+		res.headers = ""
 	}
-	if len(app_state.response_body) > 0 {
-		delete(app_state.response_body)
-		app_state.response_body = ""
+	if len(res.body) > 0 {
+		delete(res.body)
+		res.body = ""
 	}
-	if len(app_state.error_message) > 0 {
-		delete(app_state.error_message)
-		app_state.error_message = ""
+	if len(res.error_message) > 0 {
+		delete(res.error_message)
+		res.error_message = ""
 	}
 
-	app_state.request_state = .Loading
+	res.request_state = .Loading
 
 	command := editor_get_text(&app_state.curl_editor)
 
 	// Clone command to heap to pass to thread
-	cmd_ptr := new(string)
-	cmd_ptr^ = strings.clone(command)
+	input_ptr := new(WorkerTaskInput)
+	input_ptr.command_id = curr_id
+	input_ptr.command = strings.clone(command)
 
 	app_state.worker_thread = thread.create(run_curl_task)
 	if app_state.worker_thread != nil {
-		app_state.worker_thread.data = cast(rawptr)cmd_ptr
+		app_state.worker_thread.data = cast(rawptr)input_ptr
 		thread.start(app_state.worker_thread)
 	} else {
-		app_state.request_state = .Error
-		app_state.error_message = strings.clone("Failed to create worker thread")
-		free(cmd_ptr)
+		res.request_state = .Error
+		res.error_message = strings.clone("Failed to create worker thread")
+		delete(input_ptr.command)
+		free(input_ptr)
 	}
 }
 
 // Thread procedure
 run_curl_task :: proc(t: ^thread.Thread) {
-	cmd_ptr := cast(^string)t.data
-	command := cmd_ptr^
+	input := cast(^WorkerTaskInput)t.data
+	curl_res := run_curl(input.command)
 
-	result := run_curl(command)
+	task_res := WorkerTaskResult {
+		command_id = input.command_id,
+		result     = curl_res,
+	}
 
 	sync.mutex_lock(&app_state.worker_mutex)
-	app_state.worker_result = result
+	app_state.worker_result = task_res
 	sync.mutex_unlock(&app_state.worker_mutex)
 
-	delete(command)
-	free(cmd_ptr)
+	delete(input.command)
+	free(input)
 }
 
 // Save current command
@@ -2736,18 +2757,32 @@ main :: proc() {
 				app_state.worker_thread = nil
 
 				sync.mutex_lock(&app_state.worker_mutex)
-				if res, ok := app_state.worker_result.?; ok {
-					if res.success {
-						app_state.response_headers = res.headers
-						app_state.response_body = res.body
-						app_state.status_code = res.status_code
-						app_state.request_state = .Success
+				if task_res, ok := app_state.worker_result.?; ok {
+					res: ^RequestResult = nil
+					if target_id, has_id := task_res.command_id.?; has_id {
+						if cmd := find_command(&app_state, target_id); cmd != nil {
+							res = &cmd.result
+						} else {
+							// Command was deleted during execution
+							r := task_res.result
+							free_curl_result(&r)
+						}
 					} else {
-						app_state.error_message = res.error_msg
-						app_state.request_state = .Error
+						res = &app_state.unsaved_result
 					}
-					// Clear result container? technically overwriting next time is fine,
-					// but setting to nil implies handled.
+
+					if res != nil {
+						if task_res.result.success {
+							res.headers = task_res.result.headers
+							res.body = task_res.result.body
+							res.status_code = task_res.result.status_code
+							res.request_state = .Success
+						} else {
+							res.error_message = task_res.result.error_msg
+							res.request_state = .Error
+						}
+					}
+					// Clear result container
 					app_state.worker_result = nil
 				}
 				sync.mutex_unlock(&app_state.worker_mutex)
@@ -2799,8 +2834,8 @@ main :: proc() {
 	}
 }
 
-// Basic syntax highlighting for JSON
-render_highlighted_json :: proc(json_str: string) {
+// Basic syntax highlighting for JSON (with virtual scrolling)
+render_highlighted_json :: proc(json_str: string, container_height: f32, scroll_y: f32) {
 	if len(json_str) == 0 {return}
 
 	// Colors
@@ -2814,13 +2849,40 @@ render_highlighted_json :: proc(json_str: string) {
 	lines := strings.split(json_str, "\n")
 	defer delete(lines)
 
-	for line in lines {
+	line_height: f32 = 24.0 // Approximate line height with padding/font size
+	total_lines := len(lines)
+
+	// Calculate visible range
+	start_idx := int((-scroll_y) / line_height)
+	visible_lines := int(container_height / line_height) + 2 // +2 for partial viewport lines
+
+	start_idx = clamp(start_idx, 0, max(0, total_lines - 1))
+	end_idx := clamp(start_idx + visible_lines, 0, total_lines)
+
+	// Top spacer for scrolled out content
+	if start_idx > 0 {
+		top_spacer_height := f32(start_idx) * line_height
+		if clay.UI()(
+		{
+			layout = {
+				sizing = {
+					width = clay.SizingGrow({}),
+					height = clay.SizingFixed(top_spacer_height),
+				},
+			},
+		},
+		) {}
+	}
+
+	for line_idx := start_idx; line_idx < end_idx; line_idx += 1 {
+		line := lines[line_idx]
+
 		// Use a horizontal container for each line
 		if clay.UI()(
 		{
 			layout = {
 				layoutDirection = .LeftToRight,
-				sizing = {width = clay.SizingGrow({}), height = clay.SizingFit({})},
+				sizing = {width = clay.SizingGrow({}), height = clay.SizingFixed(line_height)},
 				childGap = 0, // No gap between tokens in a line
 			},
 		},
@@ -2941,6 +3003,21 @@ render_highlighted_json :: proc(json_str: string) {
 				)
 			}
 		}
+	}
+
+	// Bottom spacer for unrendered content
+	if end_idx < total_lines {
+		bottom_spacer_height := f32(total_lines - end_idx) * line_height
+		if clay.UI()(
+		{
+			layout = {
+				sizing = {
+					width = clay.SizingGrow({}),
+					height = clay.SizingFixed(bottom_spacer_height),
+				},
+			},
+		},
+		) {}
 	}
 }
 
