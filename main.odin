@@ -814,6 +814,7 @@ sidebar_component :: proc() {
 		// Get scroll data for this container
 		sidebar_scroll_id := clay.ID("CommandsList")
 		sidebar_scroll := clay.GetScrollContainerData(sidebar_scroll_id)
+		sidebar_scroll_offset: clay.Vector2 = {0, 0}
 		if sidebar_scroll.found && sidebar_scroll.scrollPosition != nil {
 			sidebar_scroll_offset = sidebar_scroll.scrollPosition^
 		}
@@ -1022,9 +1023,6 @@ main_content_component :: proc() {
 			input_bg := focused_input == .CurlInput ? COLOR_INPUT_FOCUS : COLOR_INPUT
 			curl_scroll_id := clay.ID("CurlInputBox")
 			curl_scroll := clay.GetScrollContainerData(curl_scroll_id)
-			if curl_scroll.found && curl_scroll.scrollPosition != nil {
-				curl_scroll_offset = curl_scroll.scrollPosition^
-			}
 
 			if clay.UI()(
 			{
@@ -1311,6 +1309,7 @@ main_content_component :: proc() {
 		scroll_id := clay.ID("ResponseContent")
 		response_scroll := clay.GetScrollContainerData(scroll_id)
 		response_element := clay.GetElementData(scroll_id)
+		scroll_offset: clay.Vector2 = {0, 0}
 		if response_scroll.found && response_scroll.scrollPosition != nil {
 			scroll_offset = response_scroll.scrollPosition^
 		}
@@ -1423,6 +1422,10 @@ main_content_component :: proc() {
 				// Calculate scrollbar metrics
 				container_height := response_scroll.scrollContainerDimensions.height
 				content_height := response_scroll.contentDimensions.height
+				if content_height <= 0 {
+					lines := strings.count(get_active_result(&app_state).body, "\n") + 1
+					content_height = f32(lines) * 24.0 + 24.0
+				}
 				scroll_y := -scroll_offset.y // Scroll offset is negative
 
 				// Thumb height proportional to visible area
