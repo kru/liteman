@@ -517,9 +517,13 @@ handle_interactions :: proc() {
 	// Scrollbar drag handling
 	scroll_id := clay.ID("ResponseContent")
 	response_scroll := clay.GetScrollContainerData(scroll_id)
+	response_element := clay.GetElementData(scroll_id)
 
 	if response_scroll.found && response_scroll.scrollPosition != nil {
 		container_height := response_scroll.scrollContainerDimensions.height
+		if container_height <= 0 && response_element.found {
+			container_height = response_element.boundingBox.height
+		}
 		content_height := response_scroll.contentDimensions.height
 
 		if content_height > container_height {

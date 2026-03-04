@@ -814,7 +814,6 @@ sidebar_component :: proc() {
 		// Get scroll data for this container
 		sidebar_scroll_id := clay.ID("CommandsList")
 		sidebar_scroll := clay.GetScrollContainerData(sidebar_scroll_id)
-		sidebar_scroll_offset: clay.Vector2 = {0, 0}
 		if sidebar_scroll.found && sidebar_scroll.scrollPosition != nil {
 			sidebar_scroll_offset = sidebar_scroll.scrollPosition^
 		}
@@ -837,7 +836,7 @@ sidebar_component :: proc() {
 					sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
 					childGap = 4,
 				},
-				clip = {vertical = true, childOffset = sidebar_scroll_offset},
+				clip = {vertical = true, childOffset = clay.GetScrollOffset()},
 			},
 			) {
 				// Use recursive rendering for the command hierarchy
@@ -1023,7 +1022,6 @@ main_content_component :: proc() {
 			input_bg := focused_input == .CurlInput ? COLOR_INPUT_FOCUS : COLOR_INPUT
 			curl_scroll_id := clay.ID("CurlInputBox")
 			curl_scroll := clay.GetScrollContainerData(curl_scroll_id)
-			curl_scroll_offset: clay.Vector2 = {0, 0}
 			if curl_scroll.found && curl_scroll.scrollPosition != nil {
 				curl_scroll_offset = curl_scroll.scrollPosition^
 			}
@@ -1038,7 +1036,7 @@ main_content_component :: proc() {
 				},
 				backgroundColor = input_bg,
 				cornerRadius = {6, 6, 6, 6},
-				clip = {vertical = true, childOffset = curl_scroll_offset},
+				clip = {vertical = true, childOffset = clay.GetScrollOffset()},
 			},
 			) {
 				curl_text := editor_get_text(&app_state.curl_editor)
@@ -1312,7 +1310,7 @@ main_content_component :: proc() {
 		// Get scroll data for this container
 		scroll_id := clay.ID("ResponseContent")
 		response_scroll := clay.GetScrollContainerData(scroll_id)
-		scroll_offset: clay.Vector2 = {0, 0}
+		response_element := clay.GetElementData(scroll_id)
 		if response_scroll.found && response_scroll.scrollPosition != nil {
 			scroll_offset = response_scroll.scrollPosition^
 		}
@@ -1337,7 +1335,7 @@ main_content_component :: proc() {
 				},
 				backgroundColor = COLOR_PANEL,
 				cornerRadius = {0, 0, 6, 6}, // Square top to merge with tab
-				clip = {vertical = true, horizontal = true, childOffset = scroll_offset},
+				clip = {vertical = true, horizontal = true, childOffset = clay.GetScrollOffset()},
 			},
 			) {
 				switch get_active_result(&app_state).request_state {
@@ -1356,11 +1354,15 @@ main_content_component :: proc() {
 						),
 					)
 				case .Success:
+					response_container_height := response_scroll.scrollContainerDimensions.height
+					if response_container_height <= 0 && response_element.found {
+						response_container_height = response_element.boundingBox.height
+					}
 					if get_active_result(&app_state).active_tab == .Body {
 						if len(get_active_result(&app_state).body) > 0 {
 							render_highlighted_json(
 								get_active_result(&app_state).body,
-								response_scroll.scrollContainerDimensions.height,
+								response_container_height,
 								scroll_offset.y,
 							)
 						} else {
@@ -1411,9 +1413,13 @@ main_content_component :: proc() {
 			}
 
 			// Scrollbar track (only show if content overflows)
+			scrollbar_container_height := response_scroll.scrollContainerDimensions.height
+			if scrollbar_container_height <= 0 && response_element.found {
+				scrollbar_container_height = response_element.boundingBox.height
+			}
 			if response_scroll.found &&
-			   response_scroll.contentDimensions.height >
-				   response_scroll.scrollContainerDimensions.height {
+			   response_scroll.contentDimensions.height > scrollbar_container_height &&
+			   scrollbar_container_height > 0 {
 				// Calculate scrollbar metrics
 				container_height := response_scroll.scrollContainerDimensions.height
 				content_height := response_scroll.contentDimensions.height
@@ -2743,9 +2749,16 @@ main :: proc() {
 			transmute(clay.Vector2)raylib.GetMousePosition(),
 			raylib.IsMouseButtonDown(raylib.MouseButton.LEFT),
 		)
+
+		wheel_delta := raylib.GetMouseWheelMoveV()
+
+		when ODIN_OS == .Darwin {
+			wheel_delta.x *= 25.0
+			wheel_delta.y *= 25.0
+		}
 		clay.UpdateScrollContainers(
 			false,
-			transmute(clay.Vector2)raylib.GetMouseWheelMoveV(),
+			transmute(clay.Vector2)wheel_delta,
 			raylib.GetFrameTime(),
 		)
 
