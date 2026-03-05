@@ -517,10 +517,28 @@ handle_interactions :: proc() {
 	// Scrollbar drag handling
 	scroll_id := clay.ID("ResponseContent")
 	response_scroll := clay.GetScrollContainerData(scroll_id)
+	response_element := clay.GetElementData(scroll_id)
 
 	if response_scroll.found && response_scroll.scrollPosition != nil {
 		container_height := response_scroll.scrollContainerDimensions.height
-		content_height := response_scroll.contentDimensions.height
+		if container_height <= 0 && response_element.found {
+			container_height = response_element.boundingBox.height
+		}
+
+		// Calculate true content height (virtual scrolling confuses Clay's measurement on macOS)
+		true_content_height: f32 = 0
+		res := get_active_result(&app_state)
+		if res.request_state == .Success && res.active_tab == .Body && len(res.body) > 0 {
+			lines := strings.split(res.body, "\n")
+			defer delete(lines)
+			line_height: f32 = 24.0
+			true_content_height = f32(len(lines)) * line_height + 24.0
+		} else if res.request_state == .Success && res.active_tab == .Headers && len(res.headers) > 0 {
+			header_lines := strings.split(res.headers, "\n")
+			defer delete(header_lines)
+			true_content_height = f32(len(header_lines)) * 20.0 + 24.0
+		}
+		content_height := true_content_height > 0 ? true_content_height : response_scroll.contentDimensions.height
 
 		if content_height > container_height {
 			// Handle scrollbar thumb drag start

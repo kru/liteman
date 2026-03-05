@@ -837,7 +837,7 @@ sidebar_component :: proc() {
 					sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})},
 					childGap = 4,
 				},
-				clip = {vertical = true, childOffset = sidebar_scroll_offset},
+				clip = {vertical = true, childOffset = clay.GetScrollOffset()},
 			},
 			) {
 				// Use recursive rendering for the command hierarchy
@@ -1038,7 +1038,7 @@ main_content_component :: proc() {
 				},
 				backgroundColor = input_bg,
 				cornerRadius = {6, 6, 6, 6},
-				clip = {vertical = true, childOffset = curl_scroll_offset},
+				clip = {vertical = true, childOffset = clay.GetScrollOffset()},
 			},
 			) {
 				curl_text := editor_get_text(&app_state.curl_editor)
@@ -1312,9 +1312,25 @@ main_content_component :: proc() {
 		// Get scroll data for this container
 		scroll_id := clay.ID("ResponseContent")
 		response_scroll := clay.GetScrollContainerData(scroll_id)
+		response_element := clay.GetElementData(scroll_id)
 		scroll_offset: clay.Vector2 = {0, 0}
 		if response_scroll.found && response_scroll.scrollPosition != nil {
 			scroll_offset = response_scroll.scrollPosition^
+		}
+
+		// Calculate true content height for scrollbar (virtual scrolling confuses Clay's measurement on macOS)
+		true_content_height: f32 = 0
+		res := get_active_result(&app_state)
+		if res.request_state == .Success && res.active_tab == .Body && len(res.body) > 0 {
+			lines := strings.split(res.body, "\n")
+			defer delete(lines)
+			line_height: f32 = 24.0
+			true_content_height = f32(len(lines)) * line_height + 24.0 // +24 for padding
+		} else if res.request_state == .Success && res.active_tab == .Headers && len(res.headers) > 0 {
+			// Approximate headers height
+			header_lines := strings.split(res.headers, "\n")
+			defer delete(header_lines)
+			true_content_height = f32(len(header_lines)) * 20.0 + 24.0
 		}
 
 		// Horizontal wrapper for content + scrollbar
@@ -1337,7 +1353,7 @@ main_content_component :: proc() {
 				},
 				backgroundColor = COLOR_PANEL,
 				cornerRadius = {0, 0, 6, 6}, // Square top to merge with tab
-				clip = {vertical = true, horizontal = true, childOffset = scroll_offset},
+				clip = {vertical = true, horizontal = true, childOffset = clay.GetScrollOffset()},
 			},
 			) {
 				switch get_active_result(&app_state).request_state {
@@ -1358,9 +1374,15 @@ main_content_component :: proc() {
 				case .Success:
 					if get_active_result(&app_state).active_tab == .Body {
 						if len(get_active_result(&app_state).body) > 0 {
+							// Use element bounding box as fallback when scroll container dimensions are zero
+							response_container_height :=
+								response_scroll.scrollContainerDimensions.height
+							if response_container_height <= 0 && response_element.found {
+								response_container_height = response_element.boundingBox.height
+							}
 							render_highlighted_json(
 								get_active_result(&app_state).body,
-								response_scroll.scrollContainerDimensions.height,
+								response_container_height,
 								scroll_offset.y,
 							)
 						} else {
@@ -1411,12 +1433,19 @@ main_content_component :: proc() {
 			}
 
 			// Scrollbar track (only show if content overflows)
+			scrollbar_container_height := response_scroll.scrollContainerDimensions.height
+			if scrollbar_container_height <= 0 && response_element.found {
+				scrollbar_container_height = response_element.boundingBox.height
+			}
+			// Use true_content_height (calculated from actual content) instead of Clay's measurement
+			// This fixes macOS where virtual scrolling causes Clay to under-report content height
+			content_height_for_scrollbar := true_content_height > 0 ? true_content_height : response_scroll.contentDimensions.height
 			if response_scroll.found &&
-			   response_scroll.contentDimensions.height >
-				   response_scroll.scrollContainerDimensions.height {
+			   content_height_for_scrollbar > scrollbar_container_height &&
+			   scrollbar_container_height > 0 {
 				// Calculate scrollbar metrics
-				container_height := response_scroll.scrollContainerDimensions.height
-				content_height := response_scroll.contentDimensions.height
+				container_height := scrollbar_container_height
+				content_height := content_height_for_scrollbar
 				scroll_y := -scroll_offset.y // Scroll offset is negative
 
 				// Thumb height proportional to visible area
@@ -2263,9 +2292,13 @@ deprecated_handle_interactions :: proc() {
 	// Scrollbar drag handling
 	scroll_id := clay.ID("ResponseContent")
 	response_scroll := clay.GetScrollContainerData(scroll_id)
+	response_element := clay.GetElementData(scroll_id)
 
 	if response_scroll.found && response_scroll.scrollPosition != nil {
 		container_height := response_scroll.scrollContainerDimensions.height
+		if container_height <= 0 && response_element.found {
+			container_height = response_element.boundingBox.height
+		}
 		content_height := response_scroll.contentDimensions.height
 
 		if content_height > container_height {
