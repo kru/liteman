@@ -1023,10 +1023,6 @@ main_content_component :: proc() {
 			input_bg := focused_input == .CurlInput ? COLOR_INPUT_FOCUS : COLOR_INPUT
 			curl_scroll_id := clay.ID("CurlInputBox")
 			curl_scroll := clay.GetScrollContainerData(curl_scroll_id)
-			curl_scroll_offset: clay.Vector2 = {0, 0}
-			if curl_scroll.found && curl_scroll.scrollPosition != nil {
-				curl_scroll_offset = curl_scroll.scrollPosition^
-			}
 
 			if clay.UI()(
 			{
@@ -1372,6 +1368,10 @@ main_content_component :: proc() {
 						),
 					)
 				case .Success:
+					response_container_height := response_scroll.scrollContainerDimensions.height
+					if response_container_height <= 0 && response_element.found {
+						response_container_height = response_element.boundingBox.height
+					}
 					if get_active_result(&app_state).active_tab == .Body {
 						if len(get_active_result(&app_state).body) > 0 {
 							// Use element bounding box as fallback when scroll container dimensions are zero
@@ -2776,9 +2776,16 @@ main :: proc() {
 			transmute(clay.Vector2)raylib.GetMousePosition(),
 			raylib.IsMouseButtonDown(raylib.MouseButton.LEFT),
 		)
+
+		wheel_delta := raylib.GetMouseWheelMoveV()
+
+		when ODIN_OS == .Darwin {
+			wheel_delta.x *= 25.0
+			wheel_delta.y *= 25.0
+		}
 		clay.UpdateScrollContainers(
 			false,
-			transmute(clay.Vector2)raylib.GetMouseWheelMoveV(),
+			transmute(clay.Vector2)wheel_delta,
 			raylib.GetFrameTime(),
 		)
 
